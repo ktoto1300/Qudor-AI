@@ -5,9 +5,15 @@ build-backend="setuptools.build_meta"
 name="qudor-ai"
 version="2.0.0"
 requires-python=">=3.10"
-dependencies=["numpy>=1.26","torch>=2.2","pandas>=2.1","matplotlib>=3.8","psutil>=5.9"]
+# pandas/matplotlib/psutil were listed but never imported anywhere in the tree.
+dependencies=["numpy>=1.26","torch>=2.2"]
 [project.optional-dependencies]
 dev=["pytest>=8"]
+[project.scripts]
+qudor-train="quoridor_ai.train:main"
+qudor-arena="quoridor_ai.arena:main"
+qudor-mcts-finetune="quoridor_ai.mcts_finetune:main"
+qudor-legacy-pretrain="quoridor_ai.legacy_pretrain:main"
 [tool.setuptools.packages.find]
 include=["quoridor_ai*"]
 [tool.pytest.ini_options]
