@@ -1,0 +1,48 @@
+{
+  "_comment": "Continues the az_15gb run on a Colab CPU runtime. Same network, same encoder, same search - only the batch sizes shrink to fit two vCPUs. Point it at the SAME --output directory as the GPU run and it picks up latest.pt; switching back to GPU later just means running the GPU config again.",
+  "seed": 42,
+  "encoding": 3,
+  "iterations": 5000,
+  "channels": 128,
+  "blocks": 10,
+  "se": true,
+
+  "_device": "Forced, not autodetected. A CPU runtime has no CUDA so this changes nothing there, but it makes an accidental run on a GPU session impossible to mistake for the real thing.",
+  "device": "cpu",
+  "threads": 2,
+
+  "_total_steps": "500 * 160 from colab_az_gumbel.json. The cosine schedule must keep the GPU run's horizon, otherwise resuming here would restart the decay under a different curve.",
+  "total_steps": 80000,
+
+  "gumbel": true,
+  "gumbel_cap": 16,
+  "games": 6,
+  "sims": 24,
+  "fast_sims": 8,
+  "full_frac": 0.5,
+  "max_plies": 220,
+  "temp_moves": 24,
+  "resign_v": -0.95,
+
+  "_steps": "A 128x10 optimiser step costs ~4-6 s on two vCPUs, so 8 steps is already a third of the iteration. Self-play is the useful work here; training just keeps the net moving.",
+  "steps": 8,
+  "batch": 128,
+  "lr": 0.0015,
+  "warmup_steps": 800,
+  "weight_decay": 0.0001,
+  "value_blend_q": 0.4,
+  "ema_decay": 0.999,
+  "replay": 500000,
+  "checkpoint_replay": 25000,
+
+  "_save_every": "latest.pt is ~150 MB. Iterations here are minutes, so saving every one would write over a gigabyte an hour to Drive; 10 caps the redone work at one iteration's worth.",
+  "save_every": 10,
+
+  "_gate_every": "Measured on this run: 21 s per game on two vCPUs, so one gate is 64 games = 23 min. Every 100 iterations that is 16% of wall clock, the same share the old every-50 setting cost with half as many games.",
+  "_gate_threshold": "16 games at 0.55 needed 9/16, which an evenly-matched candidate reaches 40% of the time - and two candidates are gated (live and ema) with the better one taken, so ~64% of gates promoted noise. Generations 9 and 10 both passed on 0.625/0.750 and 0.625/0.562, which is inside that band. 32 games at 0.65 needs 21/32: 5.5% false per candidate, ~11% for the pair, while still catching a genuinely 65%-strong net about half the time.",
+  "gate_every": 100,
+  "gate_games": 32,
+  "gate_sims": 48,
+  "gate_temp": 0.6,
+  "gate_threshold": 0.65
+}

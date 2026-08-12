@@ -24,6 +24,11 @@ def server():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), webapp.Handler)
     port = httpd.server_address[1]
     webapp.ALLOWED_ORIGINS = webapp.origins_for("127.0.0.1", port)
+    # main() primes this in the background at startup, and the first scan reads every
+    # checkpoint under the repo - seconds, since a latest.pt carries a replay buffer.
+    # Priming here too keeps request timeouts about the request, and keeps the promise in
+    # this module's docstring that test order never matters.
+    webapp.safe_models()
     server_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     server_thread.start()
     # Wait for the server to be ready to accept connections
@@ -66,6 +71,8 @@ def post(base, path, body, token=None, origin=None):
 def test_index_and_readonly_endpoints(server):
     with urllib.request.urlopen(server + "/", timeout=10) as r:
         assert r.status == 200 and b"<html" in r.read().lower()
+    with urllib.request.urlopen(server + "/english.js", timeout=10) as r:
+        assert r.status == 200 and b"Local game" in r.read()
     assert get(server, "/api/token")[1]["token"]
     assert isinstance(get(server, "/api/models")[1], list)
     assert isinstance(get(server, "/api/metrics")[1], list)
@@ -109,6 +116,8 @@ def test_state_payload_shape_and_no_raw_bitboards(server):
 
 def test_legal_action_is_applied_and_illegal_is_refused(server):
     token = get(server, "/api/token")[1]["token"]
+    with webapp.LOCK:
+        webapp.GAME["human_player"] = 0
     legal = get(server, "/api/state")[1]["legal"]
     move = next(a for a in legal if a < 81)
     assert post(server, "/api/action", {"action": move}, token)[0] == 200
@@ -135,6 +144,23 @@ def test_settings_clamp_speed(server):
     assert webapp.GAME["speed"] == 3.0
     post(server, "/api/settings", {"speed": -5.0}, token)
     assert webapp.GAME["speed"] == 0.25
+
+
+def test_settings_clamp_simulations(server):
+    token = get(server, "/api/token")[1]["token"]
+    assert post(server, "/api/settings", {"sims": 250}, token)[0] == 200
+    assert webapp.GAME["sims"] == 250
+    post(server, "/api/settings", {"sims": 0}, token)
+    assert webapp.GAME["sims"] == 1
+    post(server, "/api/settings", {"sims": 9999}, token)
+    assert webapp.GAME["sims"] == webapp.SIMS_MAX
+
+
+def test_state_probabilities_include_display_score(server):
+    with webapp.LOCK:
+        webapp.GAME["probs"] = [{"action": 0, "prob": 1.0, "score": 0.0}]
+    _, state = get(server, "/api/state")
+    assert state["probs"][0]["score"] == 0.0
 
 
 def test_history_is_capped_but_total_is_reported(server):

@@ -7,6 +7,19 @@ dist/
 .venv/
 venv/
 
+# Local/editor/runtime artifacts.
+*.log
+*.zip
+cloud_server_watch.json
+viewer*.log
+.model_index.json
+
+# Private cloud operations and local experiment outputs.
+ops/
+local_cpu_az/
+smoke_run/
+legacy/
+
 # Checkpoints and run artifacts: large binaries, kept on disk but out of git.
 *.pt
 *.pth

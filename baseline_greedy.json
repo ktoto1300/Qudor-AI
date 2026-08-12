@@ -1,0 +1,20 @@
+{
+  "games": 100,
+  "wins": 19,
+  "draws": 0,
+  "losses": 81,
+  "win_rate": 0.19,
+  "elo_delta": -251.8925671703283,
+  "win_rate_as_p0": 0.14,
+  "win_rate_as_p1": 0.24,
+  "avg_plies": 61.61,
+  "sims": 64,
+  "temperature": 0.6,
+  "gumbel": true,
+  "seed": 0,
+  "bot": "greedy",
+  "net": "runs/az_15gb/best.pt",
+  "generation": 15,
+  "iteration": 599,
+  "device": "cpu"
+}

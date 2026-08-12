@@ -35,8 +35,10 @@ import torch
 
 from .az_arena import compare
 from .az_selfplay import selfplay
+from .baseline import BOTS, play as play_baseline
 from .core.encoding import FLIPLR, PLANES_BY_VERSION, BEST_VERSION
 from .model import PolicyValueNet, arch_of, net_from_checkpoint
+from .runtime import configure_threads, resolve_device
 from .safe_loader import load_checkpoint
 
 _FLR = np.asarray(FLIPLR)   # index array so augmentation is a gather, not a Python loop
@@ -61,7 +63,14 @@ def _encoding_of(d):
 
 
 def _lr_at(step, total, base, warmup, floor_frac=0.05):
-    """Linear warmup then cosine decay to a small floor."""
+    """Linear warmup then cosine decay to a small floor.
+
+    `step` is a global optimiser-step count carried in the checkpoint, not `iteration *
+    steps`. The difference matters when a run resumes under a config with a different
+    `steps`: deriving the position from the iteration number would teleport the schedule -
+    moving a run from a GPU config (160 steps) to a CPU one (24) would drop it back into
+    warmup and undo the decay it had already earned.
+    """
     if step < warmup:
         return base * (step + 1) / max(1, warmup)
     t = (step - warmup) / max(1, total - warmup)
@@ -102,15 +111,17 @@ def _save(path, payload):
     os.replace(tmp, path)
 
 
-def run(config, output, resume=True, init=None):
+def run(config, output, resume=True, init=None, device=None):
     c = json.load(open(config, encoding='utf-8'))
     seed = int(c.get('seed', 42))
+    if c.get('threads') is not None:
+        configure_threads(c['threads'])
     random.seed(seed); np.random.seed(seed % (2 ** 32)); torch.manual_seed(seed)
     enc = int(c.get('encoding', BEST_VERSION))
     if enc not in PLANES_BY_VERSION:
         raise ValueError(f'config encoding={enc} unknown; known: {sorted(PLANES_BY_VERSION)}')
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = resolve_device(device or c.get('device'))
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -137,22 +148,35 @@ def run(config, output, resume=True, init=None):
     scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
     replay = deque(maxlen=int(c['replay']))
     ema = EMA(net, float(c.get('ema_decay', 0.999)))
-    start, gen = 0, 0
+    start, gen, gstep = 0, 0, 0
 
     if resume and ck.exists():
         net.load_state_dict(d['model'])
         opt.load_state_dict(d['optimizer'])
         sc = d.get('scaler')
-        if sc:
+        if sc and scaler.is_enabled():
             scaler.load_state_dict(sc)   # GradScaler rejects an empty dict.
         if d.get('ema'):
             ema.load(d['ema'])
         replay.extend(d.get('replay', []))
         start = int(d['iteration']) + 1
         gen = int(d.get('generation', 0))
+        # Checkpoints written before global_step existed: reconstruct it from the config
+        # they ran under, which is stored alongside them.
+        gstep = int(d.get('global_step', start * int(d.get('config', c).get('steps', c['steps']))))
         # Re-seed off the resume point, otherwise the restart replays the identical games.
         random.seed(seed + start); np.random.seed((seed + start) % (2 ** 32)); torch.manual_seed(seed + start)
         print(f'resumed at iteration {start}, generation {gen}, replay {len(replay)}', flush=True)
+        # The replay buffer inherited above was generated under the settings stored next to it,
+        # so a config that changes the search is mixing two kinds of data in one buffer, and a
+        # changed total_steps moves the learning-rate schedule under a run already on it.
+        # Neither is fatal and neither is always wrong - but both belong in the first lines of
+        # the log, not in a guess two hundred iterations later.
+        was = d.get('config', {})
+        for k in ('gumbel', 'gumbel_cap', 'sims', 'fast_sims', 'full_frac', 'total_steps'):
+            if k in was and was[k] != c.get(k):
+                print(f'  WARNING: {k} was {was[k]!r} in the checkpoint, now {c.get(k)!r}',
+                      flush=True)
     elif d is not None:
         net.load_state_dict(d['model'])
         ema = EMA(net, float(c.get('ema_decay', 0.999)))
@@ -170,12 +194,26 @@ def run(config, output, resume=True, init=None):
         metrics.write_text(cols + '\n')
 
     iterations = int(c['iterations'])
-    total_steps = iterations * int(c['steps'])
+    # The cosine decays to zero at total_steps, so a run that resumes another config's
+    # checkpoint has to declare that config's horizon or the learning rate jumps.
+    total_steps = int(c.get('total_steps', iterations * int(c['steps'])))
+    save_every = max(1, int(c.get('save_every', 1)))
     gate_every = int(c.get('gate_every', 5))
     gate_games = int(c.get('gate_games', 32))
     gate_sims = int(c.get('gate_sims', 100))
     gate_threshold = float(c.get('gate_threshold', 0.55))
     val_blend = float(c.get('value_blend_q', 0.4))
+    # The promotion gate is necessarily relative: it only tells us whether a candidate
+    # beat the preceding champion.  Fixed hand-written bots give the run an absolute
+    # reference point, but are expensive enough that we measure only a newly promoted
+    # champion, not every transient candidate.
+    baseline_games = int(c.get('baseline_games', 0))
+    baseline_sims = int(c.get('baseline_sims', gate_sims))
+    baseline_bots = tuple(c.get('baseline_bots', ('rusher', 'greedy')))
+    unknown_bots = set(baseline_bots) - BOTS.keys()
+    if unknown_bots:
+        raise ValueError(f'unknown baseline bots: {sorted(unknown_bots)}')
+    baseline_file = out / 'baseline.csv'
 
     for it in range(start, iterations):
         t0 = time.time()
@@ -186,6 +224,7 @@ def run(config, output, resume=True, init=None):
             full_frac=float(c.get('full_frac', 0.25)), c_puct=float(c.get('c_puct', 1.6)),
             max_plies=int(c['max_plies']), temp_moves=int(c.get('temp_moves', 20)),
             noise_frac=float(c.get('noise_frac', 0.25)), resign_v=float(c.get('resign_v', -0.95)),
+            gumbel=bool(c.get('gumbel', False)), gumbel_cap=int(c.get('gumbel_cap', 16)),
             seed=seed * 1000 + it)
         replay.extend(data)
         sp_sec = max(1e-6, time.time() - t0)
@@ -198,7 +237,8 @@ def run(config, output, resume=True, init=None):
         pl = vl = 0.0
         lr_now = c['lr']
         for k in range(steps):
-            lr_now = _lr_at(it * steps + k, total_steps, c['lr'], int(c.get('warmup_steps', 200)))
+            lr_now = _lr_at(gstep, total_steps, c['lr'], int(c.get('warmup_steps', 200)))
+            gstep += 1
             for g in opt.param_groups:
                 g['lr'] = lr_now
             idx = random.sample(range(pool_n), min(batch, pool_n))
@@ -236,7 +276,9 @@ def run(config, output, resume=True, init=None):
             trials = (('live', net), ('ema', ema_net))
             results = [(name, compare(cand, best, device, gate_games, gate_sims,
                                       temp=float(c.get('gate_temp', 0.6)),
-                                      max_plies=int(c['max_plies']), seed=seed + it))
+                                      max_plies=int(c['max_plies']), seed=seed + it,
+                                      gumbel=bool(c.get('gate_gumbel', c.get('gumbel', False))),
+                                      gumbel_cap=int(c.get('gumbel_cap', 16))))
                        for name, cand in trials]
             name, r = max(results, key=lambda kv: kv[1]['win_rate'])
             wr, elo = r['win_rate'], r['elo_delta']
@@ -249,6 +291,29 @@ def run(config, output, resume=True, init=None):
                 _save(best_ck, {'iteration': it, 'model': sd, 'config': c, 'encoding': enc,
                                 'generation': gen, 'gate': r})
                 print(f'  promoted {name} -> generation {gen}', flush=True)
+                if baseline_games > 0:
+                    champion = net if name == 'live' else ema_net
+                    new_file = not baseline_file.exists()
+                    with baseline_file.open('a', newline='') as f:
+                        writer = csv.DictWriter(
+                            f, fieldnames=('iteration', 'generation', 'champion', 'bot',
+                                           'games', 'wins', 'draws', 'losses', 'win_rate',
+                                           'elo_delta', 'avg_plies', 'sims', 'temperature',
+                                           'gumbel', 'seed'), extrasaction='ignore')
+                        if new_file:
+                            writer.writeheader()
+                        for bot_i, bot_name in enumerate(baseline_bots):
+                            br = play_baseline(
+                                champion, BOTS[bot_name], device, games=baseline_games,
+                                sims=baseline_sims, c_puct=float(c.get('c_puct', 1.6)),
+                                temp=float(c.get('baseline_temp', c.get('gate_temp', 0.6))),
+                                max_plies=int(c['max_plies']), seed=seed + it * 100 + bot_i,
+                                gumbel=bool(c.get('baseline_gumbel', c.get('gumbel', False))),
+                                gumbel_cap=int(c.get('gumbel_cap', 16)))
+                            writer.writerow(dict(br, iteration=it, generation=gen,
+                                                 champion=name, bot=bot_name))
+                            print(f'  baseline {bot_name}: {br["win_rate"]:.3f} '
+                                  f'({br["wins"]}W {br["draws"]}D {br["losses"]}L)', flush=True)
                 if name == 'ema':
                     # The EMA won, so it becomes the trunk; otherwise the raw net keeps
                     # drifting away from the strongest weights we have.
@@ -265,10 +330,14 @@ def run(config, output, resume=True, init=None):
                lr_now, wr, elo, promoted, sec, str(device), vram]
         with metrics.open('a', newline='') as f:
             csv.writer(f).writerow(row)
-        _save(ck, {'iteration': it, 'model': net.state_dict(), 'optimizer': opt.state_dict(),
-                   'scaler': scaler.state_dict(), 'ema': ema.shadow,
-                   'replay': list(replay)[-int(c['checkpoint_replay']):],
-                   'config': c, 'encoding': enc, 'generation': gen})
+        # A CPU run's iterations are short and latest.pt is ~150 MB, so writing it every
+        # time would push over a gigabyte an hour at Google Drive. save_every trades a
+        # bounded amount of redone work for that bandwidth; the last iteration always saves.
+        if (it + 1) % save_every == 0 or it == iterations - 1:
+            _save(ck, {'iteration': it, 'model': net.state_dict(), 'optimizer': opt.state_dict(),
+                       'scaler': scaler.state_dict(), 'ema': ema.shadow,
+                       'replay': list(replay)[-int(c['checkpoint_replay']):],
+                       'config': c, 'encoding': enc, 'generation': gen, 'global_step': gstep})
         (out / 'status.json').write_text(json.dumps(dict(zip(cols.split(','), row)),
                                                     indent=2, default=str))
         print(f'iteration={it} gen={gen} games={sp["games"]} samples={sp["samples"]} '
@@ -282,8 +351,9 @@ def main():
     p.add_argument('--output', required=True)
     p.add_argument('--init', help='checkpoint to start the weights from')
     p.add_argument('--no-resume', action='store_true')
+    p.add_argument('--device', help="'cpu' or 'cuda'; overrides the config and autodetection")
     a = p.parse_args()
-    run(a.config, a.output, not a.no_resume, a.init)
+    run(a.config, a.output, not a.no_resume, a.init, a.device)
 
 
 if __name__ == '__main__':

@@ -14,6 +14,9 @@ qudor-train="quoridor_ai.train:main"
 qudor-arena="quoridor_ai.arena:main"
 qudor-mcts-finetune="quoridor_ai.mcts_finetune:main"
 qudor-legacy-pretrain="quoridor_ai.legacy_pretrain:main"
+qudor-az-train="quoridor_ai.az_train:main"
+qudor-az-arena="quoridor_ai.az_arena:main"
+qudor-baseline="quoridor_ai.baseline:main"
 [tool.setuptools.packages.find]
 include=["quoridor_ai*"]
 [tool.pytest.ini_options]
