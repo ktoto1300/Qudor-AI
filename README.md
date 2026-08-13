@@ -51,7 +51,7 @@ Run on CPU explicitly:
 python train.py --force-cpu
 ```
 
-The current Colab workflow is documented in [RUN_COLAB_AZ.md](RUN_COLAB_AZ.md). The technical architecture and project status are described in [PROJECT_BRIEF.md](PROJECT_BRIEF.md).
+The technical architecture and project status are described in [PROJECT_BRIEF.md](PROJECT_BRIEF.md).
 
 ## Verification
 
