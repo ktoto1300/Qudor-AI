@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent
 # silently swap the search method halfway through.
 GPU_CONFIG = ROOT / 'configs' / 'colab_az_gumbel.json'
 CPU_CONFIG = ROOT / 'configs' / 'colab_az_cpu.json'
-DEFAULT_OUTPUT = ROOT / 'runs' / 'az_15gb'
+DEFAULT_OUTPUT = ROOT / 'runs' / 'Checkpoints'
 
 
 def detect() -> tuple[str, str]:

@@ -66,7 +66,7 @@ def quality(ref_p, ref_v, p, v):
 
 def main():
     dev = torch.device('cpu')
-    net = net_from_checkpoint(load_checkpoint(r'runs\az_15gb\best.pt', map_location=dev), dev)
+    net = net_from_checkpoint(load_checkpoint(r'runs\Checkpoints\best.pt', map_location=dev), dev)
     net.eval()
 
     st = positions(BATCH)

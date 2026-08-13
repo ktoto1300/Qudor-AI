@@ -57,7 +57,7 @@ def timed_evaluate(net, nodes, device, encoding, canon):
 def main():
     c = json.load(open(r'configs\colab_az_cpu.json', encoding='utf-8'))
     dev = torch.device('cpu')
-    net = net_from_checkpoint(load_checkpoint(r'runs\az_15gb\best.pt', map_location=dev), dev)
+    net = net_from_checkpoint(load_checkpoint(r'runs\Checkpoints\best.pt', map_location=dev), dev)
     net.eval()
 
     az_selfplay._evaluate = timed_evaluate

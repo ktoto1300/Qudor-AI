@@ -1,0 +1,14 @@
+{
+  "games": 4,
+  "wins": 4,
+  "draws": 0,
+  "losses": 0,
+  "win_rate": 1.0,
+  "bot": "minimax",
+  "depth": 2,
+  "width": 6,
+  "net": "runs/Checkpoints/best.pt",
+  "generation": 12,
+  "iteration": 239,
+  "device": "cpu"
+}

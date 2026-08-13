@@ -13,7 +13,7 @@ already computes BFS distance to goal for the v3 encoder, and the whole game is 
 between two shortest paths, so a competent beginner is a handful of lines on top of
 `dist_to_goal`.
 
-Usage:  python -m quoridor_ai.baseline --net runs/az_15gb/best.pt --bot greedy --games 100
+Usage:  python -m quoridor_ai.baseline --net runs/Checkpoints/best.pt --bot greedy --games 100
 """
 from __future__ import annotations
 

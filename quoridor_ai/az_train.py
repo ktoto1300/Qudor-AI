@@ -180,7 +180,15 @@ def run(config, output, resume=True, init=None, device=None):
     elif d is not None:
         net.load_state_dict(d['model'])
         ema = EMA(net, float(c.get('ema_decay', 0.999)))
-        print(f'initialized from {init}', flush=True)
+        # An explicit --init continues the checkpoint's lineage too.  Starting the
+        # counters at zero would relabel gen-12 as gen-0 and make the next promotion
+        # look like generation 1.
+        start = int(d.get('iteration', -1)) + 1
+        gen = int(d.get('generation', 0))
+        gstep = int(d.get('global_step', start * int(d.get('config', c).get('steps', c['steps']))))
+        replay.extend(d.get('replay', []))
+        random.seed(seed + start); np.random.seed((seed + start) % (2 ** 32)); torch.manual_seed(seed + start)
+        print(f'initialized from {init} at iteration {start}, generation {gen}, replay {len(replay)}', flush=True)
 
     if not best_ck.exists():
         _save(best_ck, {'iteration': -1, 'model': net.state_dict(), 'config': c,
@@ -234,6 +242,10 @@ def run(config, output, resume=True, init=None, device=None):
         batch = int(c['batch'])
         pool = list(replay)
         pool_n = len(pool)
+        if pool_n == 0:
+            raise RuntimeError(
+                'replay buffer is empty after self-play; refusing to train on an empty pool'
+            )
         pl = vl = 0.0
         lr_now = c['lr']
         for k in range(steps):

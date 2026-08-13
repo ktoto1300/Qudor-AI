@@ -15,7 +15,7 @@ Qudor includes a custom bitboard engine, versioned state encoding, policy/value 
 - Candidate promotion through MCTS-vs-MCTS arena gating.
 - Atomic checkpoint saves and restricted checkpoint loading.
 - Local HTTP viewer with CSRF protection, Origin checks, and project-contained model paths.
-- 86 automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, and HTTP API.
+- 88 automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, minimax, and HTTP API.
 
 ## Quick start
 
@@ -42,7 +42,7 @@ python train.py --dry-run
 Start training with automatic CPU/GPU configuration:
 
 ```bash
-python train.py --output runs/az_15gb
+python train.py --output runs/Checkpoints
 ```
 
 Run on CPU explicitly:
@@ -61,7 +61,18 @@ python -m pytest -q
 python scripts/benchmark.py
 ```
 
-The last verified local test run passed 86 tests. The full test suite currently takes roughly one minute because integration tests start the viewer and inspect available checkpoints.
+The last verified local test run passed 88 tests. The full test suite currently takes roughly one minute because integration tests start the viewer and inspect available checkpoints.
+
+### Rules variant and search note
+
+This research preview uses a deliberately restricted wall-placement variant: two wall
+segments may not be placed end-to-end. Official Quoridor rules allow such wall chains, so
+results from this project are not directly comparable with official-rule engines. Existing
+checkpoints were trained under this variant.
+
+The Gumbel implementation is an adaptation of the published method: its value mixture uses
+prior-weighted candidate Q values rather than the paper's visit-count-weighted sum. This is
+intentional and covered by the project's tests.
 
 ## Training and evaluation
 

@@ -13,7 +13,7 @@
   "gumbel": true,
   "seed": 0,
   "bot": "greedy",
-  "net": "runs/az_15gb/best.pt",
+  "net": "runs/Checkpoints/best.pt",
   "generation": 15,
   "iteration": 599,
   "device": "cpu"
