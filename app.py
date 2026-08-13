@@ -9,6 +9,7 @@ from quoridor_ai.az_selfplay import search
 from quoridor_ai.core.encoding import version_for_planes
 from quoridor_ai.core.engine import State, ACTION_SIZE, apply_unchecked, legal_actions
 from quoridor_ai.model import arch_of, net_from_checkpoint
+from quoridor_ai.quant import quantized_for
 from quoridor_ai.runtime import resolve_device
 from quoridor_ai.safe_loader import load_checkpoint
 
@@ -23,12 +24,19 @@ DEVICE = resolve_device()
 # Search budget per move. The network's raw policy head is a prior, not a player: the
 # arena gates on policy *plus* search for exactly this reason (see az_arena's header).
 # 64 keeps a move around a second on a CPU while playing far above the bare argmax.
-SIMS_DEFAULT = 64
+SIMS_DEFAULT = 32
 SIMS_MAX = 800
+# Both speed knobs are opt-in because they trade behaviour for time: graph-level int8
+# quantisation is slower than float on some CPUs (measured ~1.3x slower on this one),
+# and the round-batched Gumbel search is a different search, not a free clone (see
+# az_selfplay.search). --sims lowers the budget, which is the clean, identical lever.
+INT8_ON = False
+BATCHED_SEARCH = False
 GAME = {"state": State(player=secrets.randbelow(2)), "model": None, "model_path": None, "mode": "human",
         "human_player": 0,
         "paused": False, "thinking": False, "speed": 1.0, "history": [], "probs": [], "error": "",
-        "encoding": 1, "sims": SIMS_DEFAULT, "value": None, "searchMs": 0}
+        "encoding": 1, "sims": SIMS_DEFAULT, "value": None, "searchMs": 0, "quantized": False,
+        "batched": False}
 MODEL_CACHE: list[dict] | None = None
 MODEL_CACHE_AT = 0.0
 # Separate from LOCK: a cold scan reads every checkpoint under ROOT and must not block the
@@ -38,7 +46,7 @@ SCAN_LOCK = threading.Lock()
 MODEL_META: dict[str, tuple[tuple[float, int], dict | None]] = {}
 # Same map, persisted, so the cost is paid once ever rather than once per server start.
 MODEL_META_FILE = ROOT / ".model_index.json"
-MODEL_META_VERSION = 1
+MODEL_META_VERSION = 2
 # Filled in by main() from the actual --host/--port so the allowlist matches the running server.
 ALLOWED_ORIGINS: set[str] = set()
 
@@ -97,7 +105,6 @@ def describe_checkpoint(rel: str, path: Path) -> dict | None:
     except Exception:
         return None
     gate = data.get("gate") or {}
-    run = Path(rel).parent.as_posix() or "."
     gen, it = data.get("generation"), data.get("iteration")
     win = gate.get("win_rate")
     channels, blocks, _planes, _se = arch_of(data["model"])
@@ -112,7 +119,7 @@ def describe_checkpoint(rel: str, path: Path) -> dict | None:
         note = f"порция {it}, турнир не проходила"
     else:
         note = "стартовая сеть, не обучена"
-    return {"path": rel, "label": f"{run} · {Path(rel).stem} — сеть {channels}×{blocks}, {note}",
+    return {"path": rel, "label": f"{Path(rel).stem} — сеть {channels}×{blocks}, {note}",
             "generation": gen or 0, "iteration": it if isinstance(it, int) else -1,
             "winRate": win, "params": params}
 
@@ -147,6 +154,8 @@ def _scan_models() -> list[dict]:
     before = dict(MODEL_META)
     found, seen = [], set()
     for p in ROOT.rglob("*.pt"):
+        if p.name.endswith(".int8.pt"):
+            continue  # quantisation cache (quoridor_ai.quant), not a checkpoint
         rp = p.resolve()
         if not (rp.is_file() and ROOT in rp.parents):
             continue
@@ -162,11 +171,20 @@ def _scan_models() -> list[dict]:
             hit = (stamp, describe_checkpoint(rel, rp))
             MODEL_META[rel] = hit
         if hit[1] is not None:
-            found.append(dict(hit[1], mtime=st.st_mtime))
+            found.append(dict(hit[1], mtime=st.st_mtime, size=st.st_size))
     # Evict only what is gone from disk. Dropping the None entries too would make every
     # rescan re-read the checkpoints that cannot be played - the slowest files in the tree.
     for rel in MODEL_META.keys() - seen:
         MODEL_META.pop(rel, None)
+    # checkpoints/ and runs/Checkpoints/ hold byte-identical copies of the same networks
+    # (training writes one, the viewer dir mirrors it), so the same (size, label) is the
+    # same net at the same point in training - keep the shortest path.
+    unique: dict[tuple[int, str], dict] = {}
+    for m in found:
+        k = (m["size"], m["label"])
+        if k not in unique or len(m["path"]) < len(unique[k]["path"]):
+            unique[k] = m
+    found = list(unique.values())
     # Strongest first, since the client loads the first entry on startup. Capacity outranks
     # generation because generations are only comparable inside one run: a 48x4 smoke net
     # reaches generation 12 while the real 128x10 run is still at 8. At equal generation a
@@ -174,7 +192,7 @@ def _scan_models() -> list[dict]:
     # has only trained further, which is not by itself evidence of being stronger.
     found.sort(key=lambda m: (-m["params"], -m["generation"], m["winRate"] is None,
                               -m["iteration"], -m["mtime"], m["path"]))
-    MODEL_CACHE = [{k: v for k, v in m.items() if k != "mtime"} for m in found]
+    MODEL_CACHE = [{k: v for k, v in m.items() if k not in ("mtime", "size")} for m in found]
     MODEL_CACHE_AT = now
     if MODEL_META != before:
         save_meta_cache()
@@ -200,10 +218,15 @@ def load_model(rel: str) -> None:
     model = net_from_checkpoint(data, DEVICE)
     model.eval()
     version = version_for_planes(model.planes)
+    quantized = False
+    if INT8_ON and DEVICE.type == "cpu":
+        from torch.ao.quantization.fx.graph_module import GraphModule
+        model = quantized_for(path.resolve(), model, version)
+        quantized = isinstance(model, GraphModule)
     with LOCK:
         GAME["model"], GAME["model_path"], GAME["error"] = model, rel, ""
         GAME["encoding"] = version
-        # Stale search output would otherwise be read as the new network's opinion.
+        GAME["quantized"] = quantized        # Stale search output would otherwise be read as the new network's opinion.
         GAME["probs"], GAME["value"] = [], None
         should_start = (GAME["mode"] == "human" and GAME["state"].player != GAME["human_player"]
                         and not GAME["paused"] and not is_over(GAME["state"]))
@@ -236,7 +259,8 @@ def state_payload() -> dict:
                 "draw": s.winner is None and s.ply >= MAX_PLIES,
                 "maxPlies": MAX_PLIES,
                 "model": GAME["model_path"], "paused": GAME["paused"],
-                "thinking": GAME["thinking"],
+                "thinking": GAME["thinking"], "quant": GAME["quantized"],
+                "batched": GAME["batched"], "int8On": INT8_ON,
                 # Cap the payload: a 220-ply game would otherwise ship the full log 1.25×/s.
                 "history": GAME["history"][-HISTORY_LIMIT:],
                 "historyTotal": len(GAME["history"]),
@@ -276,7 +300,7 @@ def ai_move() -> None:
         # /api/state, so the board would freeze while the AI thinks.
         t0 = time.monotonic()
         actions, probs, value = search(model, s, DEVICE, encoding=encoding, sims=sims,
-                                       max_plies=MAX_PLIES)
+                                       max_plies=MAX_PLIES, batched=BATCHED_SEARCH)
         elapsed = int((time.monotonic() - t0) * 1000)
         if not actions:
             return
@@ -391,13 +415,25 @@ class Handler(BaseHTTPRequestHandler):
                 if should_start: threading.Thread(target=ai_move, daemon=True).start()
                 return self.json({"ok": True})
             if path == "/api/settings":
+                global INT8_ON, BATCHED_SEARCH
+                requant = None
                 with LOCK:
                     GAME["mode"] = body.get("mode", GAME["mode"])
                     GAME["speed"] = max(.25, min(3.0, float(body.get("speed", GAME["speed"]))))
                     if "sims" in body:
                         GAME["sims"] = max(1, min(SIMS_MAX, int(body["sims"])))
+                    if "batched" in body:
+                        BATCHED_SEARCH = bool(body["batched"])
+                        GAME["batched"] = BATCHED_SEARCH
+                    if "int8" in body and bool(body["int8"]) != INT8_ON:
+                        # Quantisation happens at load time, so toggling it re-loads the
+                        # current checkpoint; float path is unchanged when nothing is loaded.
+                        INT8_ON = bool(body["int8"])
+                        requant = GAME["model_path"]
                     if "paused" in body: GAME["paused"] = bool(body["paused"])
                     should_start = GAME["mode"] == "ai" and not GAME["paused"]
+                if requant:
+                    load_model(requant)
                 if should_start: threading.Thread(target=ai_move, daemon=True).start()
                 return self.json({"ok": True})
             if path == "/api/step":
@@ -429,11 +465,21 @@ ALLOWED_ORIGINS = origins_for("127.0.0.1", 8765)
 
 
 def main():
+    global ALLOWED_ORIGINS, INT8_ON, BATCHED_SEARCH, SIMS_DEFAULT, GAME
     parser = argparse.ArgumentParser(); parser.add_argument("--host", default="127.0.0.1"); parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--sims", type=int, default=SIMS_DEFAULT, help="search budget per move (default 32)")
+    parser.add_argument("--int8", action="store_true", help="use the cached int8 quantised network (often slower on a CPU)")
+    parser.add_argument("--batched-search", action="store_true",
+                        help="defer each Gumbel round's evaluations into one forward pass; faster, but a slightly different search")
     args = parser.parse_args()
-    global ALLOWED_ORIGINS
+    SIMS_DEFAULT = max(1, min(args.sims, SIMS_MAX))
+    GAME["sims"] = SIMS_DEFAULT
+    INT8_ON = args.int8
+    BATCHED_SEARCH = args.batched_search
     ALLOWED_ORIGINS = origins_for(args.host, args.port)
-    print(f"Qudor viewer: http://{args.host}:{args.port}", flush=True)
+    print(f"Qudor viewer: http://{args.host}:{args.port}  sims={SIMS_DEFAULT}"
+          f"  int8={'on' if INT8_ON else 'off'}"
+          f"  batched={'on' if BATCHED_SEARCH else 'off'}", flush=True)
     # Describing every checkpoint means reading it, and a latest.pt carries a replay buffer -
     # several seconds for the tree here. Starting that now overlaps it with the user opening
     # the browser instead of making their first page load wait for all of it.

@@ -62,7 +62,9 @@ def _expand(node: Node, logits_row, value, canon: bool):
     acts = legal_actions(node.s)
     node.acts = acts
     if not acts:
-        node.terminal = 0.0
+        # A finished board has no legal moves.  Match _terminal_value semantics:
+        # the player to move has already lost; a genuine stalemate is a draw.
+        node.terminal = -1.0 if node.s.winner is not None else 0.0
         return
     cacts = [int(MIRROR[a]) for a in acts] if (canon and node.s.player == 1) else list(acts)
     node.cacts = cacts
@@ -302,7 +304,7 @@ def _select_gumbel(g: _Game, max_plies: int):
 
 
 def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=16,
-           c_puct=1.6, max_plies=220, seed=None):
+           c_puct=1.6, max_plies=220, seed=None, batched=False):
     """Search one position. Returns (actions, probabilities, root value).
 
     Self-play and the arena batch many games through each forward pass because they have
@@ -315,30 +317,64 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
     Unlike self-play there is no Dirichlet noise and, in Gumbel mode, the caller is
     expected to take the argmax rather than the Gumbel winner. Both exist to explore, and
     an opponent that explores is just an opponent playing below its strength.
+
+    `batched` defers each Sequential-Halving round's evaluations into one forward pass
+    instead of evaluating every visit on its own - at sims=64 that turns ~64
+    single-position forwards into 4-7 batched ones, several times faster on a CPU. The
+    visit schedule is unchanged, but the leaf selections inside a round then see the
+    previous round's backups rather than the same round's, so this is a slightly
+    different search rather than a free-speedup clone of the per-visit loop. Self-play
+    and the arena always use the per-visit reference; only an interactive caller should
+    opt in.
     """
     root = Node(s)
     canon = is_canonical(encoding)
     _evaluate(net, [root], device, encoding, canon)
     if not root.acts:
-        return [], np.zeros(0, np.float32), 0.0
+        # _expand set terminal from the mover's view: -1.0 for an already-lost
+        # board, 0.0 for a genuine stalemate. Reporting 0.0 here would make a
+        # finished position look like a draw.
+        return [], np.zeros(0, np.float32), float(root.terminal)
 
     holder = SimpleNamespace(root=root, sched=None)
     if gumbel:
         holder.sched = _Sched(root, np.random.default_rng(seed), sims, gumbel_cap)
-        rounds = holder.sched.budget      # next() consumes budget, so read it before looping
     else:
         rounds = sims
 
-    for _ in range(rounds):
-        if gumbel:
-            leaf, path = _select_gumbel(holder, max_plies)
-            if leaf is None:              # halving schedule exhausted early
-                break
+    if gumbel:
+        if batched:
+            # Each round visits every surviving candidate once; the round's leaves are
+            # independent of each other, so they share one forward pass. The schedule's
+            # next() calls run in the same order as in the per-visit loop.
+            while True:
+                batch = []
+                for _ in range(len(holder.sched.cands)):
+                    leaf, path = _select_gumbel(holder, max_plies)
+                    if leaf is None:              # budget exhausted
+                        break
+                    batch.append((leaf, path))
+                if not batch:
+                    break
+                leaves = [leaf for leaf, _ in batch if leaf.terminal is None]
+                if leaves:
+                    _evaluate(net, leaves, device, encoding, canon)
+                for leaf, path in batch:
+                    _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
         else:
+            for _ in range(holder.sched.budget):
+                leaf, path = _select_gumbel(holder, max_plies)
+                if leaf is None:
+                    break
+                if leaf.terminal is None:
+                    _evaluate(net, [leaf], device, encoding, canon)
+                _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
+    else:
+        for _ in range(rounds):
             leaf, path = _select(root, c_puct, max_plies)
-        if leaf.terminal is None:
-            _evaluate(net, [leaf], device, encoding, canon)
-        _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
+            if leaf.terminal is None:
+                _evaluate(net, [leaf], device, encoding, canon)
+            _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
 
     if gumbel:
         probs = _improved_policy(root).astype(np.float64)

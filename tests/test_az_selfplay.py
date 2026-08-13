@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from quoridor_ai.az_selfplay import (Node, _completed_q, _considered, _evaluate,
-                                     _improved_policy, selfplay)
+                                     _improved_policy, search, selfplay)
 from quoridor_ai.core.encoding import PLANES_BY_VERSION
 from quoridor_ai.core.engine import State
 from quoridor_ai.model import PolicyValueNet
@@ -20,6 +20,39 @@ def test_selfplay_reports_actual_terminal_ply_not_last_recorded_sample():
     assert stats["avg_plies"] == pytest.approx(12.0)
     assert data
     assert all(float(pi.sum()) == pytest.approx(1.0) for _, pi, _, _ in data)
+
+
+def test_search_reports_a_won_position_as_a_loss_for_the_mover():
+    """Finished boards used to return root value 0.0, which reads as a draw in the UI."""
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3])
+    won = State(p0=0, p1=40, player=1)          # player 0 already reached its goal row
+    acts, probs, value = search(net, won, torch.device("cpu"), encoding=3, sims=4)
+    assert acts == []
+    assert probs.shape == (0,)
+    assert value == -1.0, "the mover faces an already-lost board, not a draw"
+
+
+def test_batched_gumbel_is_deterministic_and_compatible():
+    """The batched Gumbel variant is a speed option, not an equivalent clone of the
+    per-visit loop (its leaf selections inside a round see the previous round's backups
+    rather than the same round's). What it must guarantee is a stable, well-formed
+    result, and identical output under the same seed."""
+
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3])
+    dev = torch.device("cpu")
+    opening = State()
+    for sims, cap in ((24, 16), (64, 16)):
+        a, p, v = search(net, opening, dev, encoding=3, sims=sims, gumbel=True,
+                         gumbel_cap=cap, seed=7, batched=True)
+        a2, p2, v2 = search(net, opening, dev, encoding=3, sims=sims, gumbel=True,
+                            gumbel_cap=cap, seed=7, batched=True)
+        a3, p3, v3 = search(net, opening, dev, encoding=3, sims=sims, gumbel=True,
+                            gumbel_cap=cap, seed=7, batched=False)
+        assert a == a2 and v == v2
+        assert np.array_equal(p, p2)
+        assert set(a) == set(range(81, 209)) | {67, 75, 77}
+        assert np.isfinite(p).all() and 0.0 < p.sum() <= 1.0 + 1e-6
+        assert a3 == a and p.shape == p3.shape and np.isfinite(v3)
 
 
 def _root(net, sims_seed=0):

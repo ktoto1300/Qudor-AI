@@ -15,7 +15,7 @@ Qudor includes a custom bitboard engine, versioned state encoding, policy/value 
 - Candidate promotion through MCTS-vs-MCTS arena gating.
 - Atomic checkpoint saves and restricted checkpoint loading.
 - Local HTTP viewer with CSRF protection, Origin checks, and project-contained model paths.
-- 88 automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, minimax, and HTTP API.
+- 93 automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, minimax, and HTTP API.
 
 ## Quick start
 
@@ -61,7 +61,11 @@ python -m pytest -q
 python scripts/benchmark.py
 ```
 
-The last verified local test run passed 88 tests. The full test suite currently takes roughly one minute because integration tests start the viewer and inspect available checkpoints.
+The last verified local test run passed 93 tests. The full suite takes roughly three minutes because the integration tests start the viewer and inspect available checkpoints.
+
+The viewer's settings panel can switch the search between the per-visit reference and the
+round-batched Gumbel variant (faster, slightly different search), enable int8
+quantisation, and tune the per-move simulation budget.
 
 ## Checkpoints
 

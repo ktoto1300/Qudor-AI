@@ -41,6 +41,7 @@ NB=tuple(NB)
 EM=[0]*6561                       # flat a*81+b -> mask, used to walk a path back
 for _x in range(81):
  for _y,_m in NB[_x]:EM[_x*81+_y]=_m
+ROW=tuple(_x//9 for _x in range(81))   # row lookup, replaces a divmod per BFS step
 del _x,_y,_m,_r,_c,_e,_dr,_dc,_rr,_cc
 
 def blocked(a,b,s):return ((s.h|s.v<<64)&EM[a*81+b])!=0
@@ -66,11 +67,11 @@ def pawn_moves(s,player=None):
 def _reach(w,start,goal):
  """True if `start` reaches row `goal` given packed walls `w`."""
  if start//9==goal:return True
- seen=1<<start;q=[start];i=0
+ seen=1<<start;q=[start];i=0;nb=NB;row=ROW
  while i<len(q):
-  for y,m in NB[q[i]]:
+  for y,m in nb[q[i]]:
    if not(w&m or seen>>y&1):
-    if y//9==goal:return True
+    if row[y]==goal:return True
     seen|=1<<y;q.append(y)
   i+=1
  return False
@@ -80,15 +81,15 @@ def _path_cut(w,start,goal):
  would cross that path (so `cut & candidate == 0` proves the path survives),
  or None when no path exists."""
  if start//9==goal:return 0
- seen=1<<start;q=[start];par=[0]*81;i=0
+ seen=1<<start;q=[start];par=[0]*81;i=0;nb=NB;row=ROW;em=EM
  while i<len(q):
   x=q[i];i+=1
-  for y,m in NB[x]:
+  for y,m in nb[x]:
    if not(w&m or seen>>y&1):
     par[y]=x
-    if y//9==goal:
+    if row[y]==goal:
      cut=0
-     while y!=start:p=par[y];cut|=EM[p*81+y];y=p
+     while y!=start:p=par[y];cut|=em[p*81+y];y=p
      return cut
     seen|=1<<y;q.append(y)
  return None
@@ -119,18 +120,6 @@ def dist_to_goal(s,player):
  """Shortest path length for `player`, or _UNREACH when walled off entirely."""
  return dist_field(s,0 if player==0 else 8)[s.p0 if player==0 else s.p1]
 
-def can_wall(s,o,r,c):
- if not(0<=r<8 and 0<=c<8) or (s.walls0 if s.player==0 else s.walls1)<=0:return False
- b=bit(r,c)
- if (s.h|s.v)&b:return False
- if o=='h':
-  if (c>0 and s.h&bit(r,c-1)) or (c<7 and s.h&bit(r,c+1)):return False
-  w=(s.h|b)|s.v<<64
- else:
-  if (r>0 and s.v&bit(r-1,c)) or (r<7 and s.v&bit(r+1,c)):return False
-  w=s.h|(s.v|b)<<64
- return _reach(w,s.p0,0) and _reach(w,s.p1,8)
-
 _PCAP=16                          # alternative paths kept per player, per call
 
 def _safe(w,bw,pool,start,goal):
@@ -152,7 +141,8 @@ def legal_actions(s):
  a=pawn_moves(s)
  if (s.walls0 if s.player==0 else s.walls1)<=0:return a
  h=s.h;v=s.v;hv=h|v;w=h|v<<64;p0=s.p0;p1=s.p1
- c0=_path_cut(w,p0,0);c1=_path_cut(w,p1,8)
+ safe=_safe;cut=_path_cut
+ c0=cut(w,p0,0);c1=cut(w,p1,8)
  if c0 is None or c1 is None:return a   # already cut off: no wall can be legal
  P0=[c0];P1=[c1]
  for r in range(8):
@@ -160,10 +150,10 @@ def legal_actions(s):
    b=1<<(r*8+c)
    if hv&b:continue                     # slot taken by either orientation
    if not((c>0 and h&b>>1)or(c<7 and h&b<<1)):
-    if _safe(w,b,P0,p0,0) and _safe(w,b,P1,p1,8):a.append(81+r*8+c)
+    if safe(w,b,P0,p0,0) and safe(w,b,P1,p1,8):a.append(81+r*8+c)
    if not((r>0 and v&b>>8)or(r<7 and v&b<<8)):
     bv=b<<64
-    if _safe(w,bv,P0,p0,0) and _safe(w,bv,P1,p1,8):a.append(145+r*8+c)
+    if safe(w,bv,P0,p0,0) and safe(w,bv,P1,p1,8):a.append(145+r*8+c)
  return a
 
 def apply_unchecked(s,a):

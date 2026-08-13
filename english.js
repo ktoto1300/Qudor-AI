@@ -1,5 +1,12 @@
 (function () {
   const replacements = [
+    ['Режим поиска', 'Search mode'],
+    ['Последовательный', 'Sequential'], ['Батчевый (быстрее)', 'Batched (faster)'],
+    ['Батчевый собирает оценки раунда в один проход — быстрее, но это чуть другой поиск.', "Batched search evaluates a whole round at once — faster, but a slightly different search."],
+    ['int8 квантование', 'int8 quantisation'],
+    ['Грузит сеть в int8; на некоторых CPU медленнее — сравните время хода.', 'Loads the network as int8; slower on some CPUs — compare move time.'],
+    ['Не удалось сменить режим поиска:', 'Could not change search mode:'],
+    ['Не удалось переключить int8:', 'Could not toggle int8:'],
     ['Локальная игра и диагностика модели', 'Local game and model diagnostics'],
     ['Загрузка…', 'Loading…'], ['Доска Quoridor', 'Quoridor board'],
     ['Новая партия', 'New game'], ['Ход пешкой', 'Pawn move'],
