@@ -94,6 +94,68 @@ The Gumbel implementation is an adaptation of the published method: its value mi
 prior-weighted candidate Q values rather than the paper's visit-count-weighted sum. This is
 intentional and covered by the project's tests.
 
+## Training history
+
+Training runs are listed in wall-clock order. Generation counters were reset when the
+training moved to a new hardware setup, so the same generation number may appear in more
+than one campaign. `checkpoints/best.pt` and `checkpoints/latest.pt` come from the RTX 3060
+Ti server campaign; the `gen13_*` files come from the earlier Colab campaign.
+
+### Campaigns
+
+| Campaign | Hardware | Period (UTC) | Duration | Generations |
+| --- | --- | --- | --- | --- |
+| v1 seed experiments | Google Colab | Aug 5–6 | not recorded | none (iteration counter only) |
+| AlphaZero campaign | Google Colab, 15 GB GPU | Aug 7 20:18 → Aug 11 18:19+ | ≈ 94–121 h (est.) | 0 → 15 recorded, up to 17 per recollection |
+| Server run (`rtx3060_24h`) | RTX 3060 Ti 8 GB | Aug 12 21:29 → Aug 13 12:35 | 15 h 06 m — gens 0 → 12 |
+| Continuation (current) | RTX 3060 Ti 8 GB | Aug 13 13:47 → now | ≈ 3.5 h and counting | 11 → 14 and counting |
+
+How the project changed along the way:
+
+- **v1 seed experiments (Aug 5–6, Colab):** first attempts — v1 11-plane encoder, a
+  pre-ResBlock network, and seed-based runs (`seed_11`/`seed_22`/`seed_33`) with an
+  iteration counter only, no generations.
+- **AlphaZero campaign (Aug 7–11, Colab):** the modern pipeline took over — v3 16-plane
+  encoder with canonical mirroring, 128×10 SE ResNet, PUCT/Gumbel search, replay-buffer
+  training with EMA and arena gating, and the generation counter that reset to 0 whenever
+  training moved to a new host. Reached gen 15 in saved checkpoints (up to ~17 per
+  recollection) before the move to the dedicated GPU server.
+- **Server run (Aug 12–13):** fresh start on the RTX 3060 Ti server, 256 games per
+  iteration, gates every 20 iterations.
+- **Continuation (ongoing):** resumed from the server run's `latest.pt` with a fresh
+  replay buffer; both EMA and live candidates have been promoted across gates 12 → 14.
+
+### Arena gates
+
+Every gate is a Gumbel-search match of the candidate against the previous champion at
+48 simulations per move.
+
+| Campaign | Generation | Iteration | Promoted | Games | Win rate | Elo Δ |
+| --- | --- | --- | --- | --- | --- | --- |
+| Colab | 8 | 99 | — | 16 | 81.3% (13W 0D 3L) | +255 |
+| Colab | 12 | 349 | — | 16 | 59.4% (9W 1D 6L) | +66 |
+| Colab | 13 | 439 | — | 64 | 85.2% (54W 1D 9L) | +303 |
+| Colab | 15 | 599 | — | 32 | 68.8% (22W 0D 10L) | +137 |
+| Server | 12 | 238 | live | 64 | 90.6% (58W 0D 6L) | +394 |
+| Continuation | 12 | 238 | ema | 64 | 67.2% (43W) | +124 |
+| Continuation | 13 | 258 | live | 64 | 79.7% (51W) | +237 |
+| Continuation | 14 | 278 | ema | 64 | 67.2% (43W) | +124 |
+
+### Baseline evals
+
+Bots are deterministic: greedy follows the shortest path, rusher sprints straight for the
+goal. Settings: Gumbel search, temperature 0.6, 48 simulations per move (64 for the final
+server-run eval).
+
+| Campaign | Generation | Bot | Games | Win rate | Elo Δ |
+| --- | --- | --- | --- | --- | --- |
+| Server | 12 (iter 239) | greedy | 100 | 90.0% (90W 0D 10L) | +382 |
+| Server | 12 (iter 239) | rusher | 100 | 100% (100W) | +1600 |
+| Continuation | 12 | greedy | 64 | 96.9% (62W 0D 2L) | +597 |
+| Continuation | 13 | greedy | 64 | 87.5% (56W 0D 8L) | +338 |
+| Continuation | 14 | greedy | 64 | 85.9% (55W 0D 9L) | +314 |
+| Continuation | 12–14 | rusher | 64 | 100% (64W) | +1600 |
+
 ## Training and evaluation
 
 The main pipeline is implemented in:
@@ -104,7 +166,10 @@ The main pipeline is implemented in:
 - `quoridor_ai/batched_mcts.py` — batched search;
 - `quoridor_ai/baseline.py` — deterministic baseline bots.
 
-The repository contains local experiment logs, but they are not a controlled strength benchmark. Current retained logs represent 2,196 recorded self-play games across the available local runs; these runs use different configurations and must not be combined as a single leaderboard result. Human play observations are informal and are not used as a formal evaluation metric.
+The training history above summarises the recorded campaigns. They used different
+hardware, configurations, and generation counters, so their numbers must not be combined
+into a single leaderboard. Baseline evals are included for reference only; human play
+observations are informal and are not used as a formal evaluation metric.
 
 For a meaningful comparison, report the configuration, checkpoint, encoding version, MCTS simulations, number of games, player-color balancing, seed, and confidence interval.
 
