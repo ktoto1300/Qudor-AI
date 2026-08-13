@@ -109,7 +109,8 @@ Ti server campaign; the `gen13_*` files come from the earlier Colab campaign.
 | v1 seed experiments | Google Colab | Aug 5–6 | not recorded | none (iteration counter only) |
 | AlphaZero campaign | Google Colab, 15 GB GPU | Aug 7 20:18 → Aug 11 18:19+ | ≈ 94–121 h (est.) | 0 → 15 recorded, up to 17 per recollection |
 | Server run (`rtx3060_24h`) | RTX 3060 Ti 8 GB | Aug 12 21:29 → Aug 13 12:35 | 15 h 06 m — gens 0 → 12 |
-| Continuation (current) | RTX 3060 Ti 8 GB | Aug 13 13:47 → now | ≈ 3.5 h and counting | 11 → 14 and counting |
+| Continuation | RTX 3060 Ti 8 GB | Aug 13 13:47 → Aug 13 17:39 | 3 h 52 m | 11 → 14 |
+| Official rules (current) | RTX 3060 Ti 8 GB | Aug 13 17:40 → now | running | 14 → (continuing) |
 
 How the project changed along the way:
 
@@ -123,8 +124,10 @@ How the project changed along the way:
   recollection) before the move to the dedicated GPU server.
 - **Server run (Aug 12–13):** fresh start on the RTX 3060 Ti server, 256 games per
   iteration, gates every 20 iterations.
-- **Continuation (ongoing):** resumed from the server run's `latest.pt` with a fresh
-  replay buffer; both EMA and live candidates have been promoted across gates 12 → 14.
+- **Continuation:** resumed from the server run's `latest.pt` with a fresh replay
+  buffer; both EMA and live candidates were promoted across gates 12 → 14.
+- **Official rules (current):** the engine switched to official wall-chaining rules;
+  training restarted from the gen-14 champion with a fresh replay buffer.
 
 ### Arena gates
 
