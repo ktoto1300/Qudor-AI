@@ -69,9 +69,9 @@ quantisation, and tune the per-move simulation budget.
 
 ## Checkpoints
 
-Published checkpoints live in `checkpoints/` and are stored via Git LFS. All were
-trained under the restricted wall-placement variant (see below) with the v3 encoder and
-a 128×10 SE ResNet.
+Published checkpoints live in `checkpoints/` and are stored via Git LFS. They were
+trained under an earlier restricted wall-placement variant (see below) with the v3 encoder
+and a 128×10 SE ResNet; the engine has since switched to official wall-chaining rules.
 
 | File | Generation | Iteration | Arena gate |
 | --- | --- | --- | --- |
@@ -85,10 +85,11 @@ won against the previous best network at gate settings from the training configu
 
 ### Rules variant and search note
 
-This research preview uses a deliberately restricted wall-placement variant: two wall
-segments may not be placed end-to-end. Official Quoridor rules allow such wall chains, so
-results from this project are not directly comparable with official-rule engines. Existing
-checkpoints were trained under this variant.
+The engine implements official Quoridor rules: wall segments may touch end-to-end, and the
+only placement constraint besides slot occupancy is that a wall must not completely block a
+player's path to their goal row. Checkpoints published so far predate this switch — they
+were trained under a restricted variant that forbade end-to-end wall chains. Training runs
+started after the switch use the official rules.
 
 The Gumbel implementation is an adaptation of the published method: its value mixture uses
 prior-weighted candidate Q values rather than the paper's visit-count-weighted sum. This is

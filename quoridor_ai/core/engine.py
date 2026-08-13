@@ -149,11 +149,9 @@ def legal_actions(s):
   for c in range(8):
    b=1<<(r*8+c)
    if hv&b:continue                     # slot taken by either orientation
-   if not((c>0 and h&b>>1)or(c<7 and h&b<<1)):
-    if safe(w,b,P0,p0,0) and safe(w,b,P1,p1,8):a.append(81+r*8+c)
-   if not((r>0 and v&b>>8)or(r<7 and v&b<<8)):
-    bv=b<<64
-    if safe(w,bv,P0,p0,0) and safe(w,bv,P1,p1,8):a.append(145+r*8+c)
+   if safe(w,b,P0,p0,0) and safe(w,b,P1,p1,8):a.append(81+r*8+c)
+   bv=b<<64
+   if safe(w,bv,P0,p0,0) and safe(w,bv,P1,p1,8):a.append(145+r*8+c)
  return a
 
 def apply_unchecked(s,a):

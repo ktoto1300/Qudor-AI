@@ -39,3 +39,13 @@ def test_wall_bit_indices_are_eight_by_eight():
  for r in range(8):
   for c in range(8):
    assert (bit(r,c).bit_length()-1) == r*8+c
+
+def test_end_to_end_wall_chains_are_legal():
+    # a horizontal wall may be extended end-to-end by another horizontal wall
+    s = apply_unchecked(State(), 81 + 4*8 + 2)          # h in slot (4,2)
+    plays = legal_actions(s)
+    assert 81 + 4*8 + 1 in plays and 81 + 4*8 + 3 in plays
+    # a vertical wall may be extended end-to-end by another vertical wall
+    s = apply_unchecked(State(), 145 + 2*8 + 4)         # v in slot (2,4)
+    plays = legal_actions(s)
+    assert 145 + 1*8 + 4 in plays and 145 + 3*8 + 4 in plays
