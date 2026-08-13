@@ -63,6 +63,22 @@ python scripts/benchmark.py
 
 The last verified local test run passed 88 tests. The full test suite currently takes roughly one minute because integration tests start the viewer and inspect available checkpoints.
 
+## Checkpoints
+
+Published checkpoints live in `checkpoints/` and are stored via Git LFS. All were
+trained under the restricted wall-placement variant (see below) with the v3 encoder and
+a 128×10 SE ResNet.
+
+| File | Generation | Iteration | Arena gate |
+| --- | --- | --- | --- |
+| `checkpoints/gen13_best.pt` | 13 | 439 | 85.2% (54/64) |
+| `checkpoints/gen13_latest.pt` | 13 | 444 | — |
+| `checkpoints/best.pt` | 12 | 239 | 90.6% (58/64) |
+| `checkpoints/latest.pt` | 11 | 234 | — |
+
+The viewer lists these in its model menu. The arena gate is the fraction of gated games
+won against the previous best network at gate settings from the training configuration.
+
 ### Rules variant and search note
 
 This research preview uses a deliberately restricted wall-placement variant: two wall
