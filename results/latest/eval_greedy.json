@@ -1,0 +1,20 @@
+{
+  "games": 100,
+  "wins": 90,
+  "draws": 0,
+  "losses": 10,
+  "win_rate": 0.9,
+  "elo_delta": 381.69700377572997,
+  "win_rate_as_p0": 0.94,
+  "win_rate_as_p1": 0.86,
+  "avg_plies": 56.82,
+  "sims": 64,
+  "temperature": 0.6,
+  "gumbel": true,
+  "seed": 20260813,
+  "bot": "greedy",
+  "net": "runs/rtx3060_24h/best.pt",
+  "generation": 12,
+  "iteration": 239,
+  "device": "cuda"
+}
