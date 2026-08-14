@@ -1,4 +1,12 @@
-from quoridor_ai.core.engine import *
+from quoridor_ai.core.engine import (
+    ACTION_SIZE,
+    State,
+    apply_unchecked,
+    bit,
+    has_path,
+    legal_actions,
+    pawn_moves,
+)
 def test_initial():
  s=State();assert s.p0==76 and s.p1==4 and len(pawn_moves(s))==3 and len(legal_actions(s))>100
 def test_jump():
@@ -41,11 +49,28 @@ def test_wall_bit_indices_are_eight_by_eight():
    assert (bit(r,c).bit_length()-1) == r*8+c
 
 def test_end_to_end_wall_chains_are_legal():
-    # a horizontal wall may be extended end-to-end by another horizontal wall
+    # End-to-end walls are two slots apart: they share a point, not an edge.
     s = apply_unchecked(State(), 81 + 4*8 + 2)          # h in slot (4,2)
     plays = legal_actions(s)
-    assert 81 + 4*8 + 1 in plays and 81 + 4*8 + 3 in plays
-    # a vertical wall may be extended end-to-end by another vertical wall
+    assert 81 + 4*8 + 0 in plays and 81 + 4*8 + 4 in plays
     s = apply_unchecked(State(), 145 + 2*8 + 4)         # v in slot (2,4)
     plays = legal_actions(s)
-    assert 145 + 1*8 + 4 in plays and 145 + 3*8 + 4 in plays
+    assert 145 + 0*8 + 4 in plays and 145 + 4*8 + 4 in plays
+
+def test_same_orientation_walls_cannot_overlap():
+    s = apply_unchecked(State(), 81 + 4*8 + 2)
+    plays = legal_actions(s)
+    assert 81 + 4*8 + 1 not in plays
+    assert 81 + 4*8 + 3 not in plays
+
+    s = apply_unchecked(State(), 145 + 2*8 + 4)
+    plays = legal_actions(s)
+    assert 145 + 1*8 + 4 not in plays
+    assert 145 + 3*8 + 4 not in plays
+
+def test_wall_overlap_checks_do_not_wrap_at_board_edges():
+    s = apply_unchecked(State(), 81 + 3*8 + 7)
+    assert 81 + 4*8 + 0 in legal_actions(s)
+
+    s = apply_unchecked(State(), 145 + 7*8 + 3)
+    assert 145 + 0*8 + 4 in legal_actions(s)

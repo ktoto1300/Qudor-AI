@@ -1,6 +1,8 @@
 from __future__ import annotations
 from dataclasses import dataclass
 N=9; ACTION_SIZE=209
+# Increment whenever legal positions/actions change incompatibly with saved replay data.
+RULES_VERSION=2
 @dataclass(slots=True)
 class State:
     p0:int=76; p1:int=4; walls0:int=10; walls1:int=10; h:int=0; v:int=0; player:int=0; ply:int=0
@@ -149,9 +151,13 @@ def legal_actions(s):
   for c in range(8):
    b=1<<(r*8+c)
    if hv&b:continue                     # slot taken by either orientation
-   if safe(w,b,P0,p0,0) and safe(w,b,P1,p1,8):a.append(81+r*8+c)
+   # Same-orientation walls in adjacent slots overlap by one board edge.
+   # Slots two positions apart only touch end-to-end and remain legal.
+   h_overlap=(c>0 and h&(b>>1)) or (c<7 and h&(b<<1))
+   if not h_overlap and safe(w,b,P0,p0,0) and safe(w,b,P1,p1,8):a.append(81+r*8+c)
    bv=b<<64
-   if safe(w,bv,P0,p0,0) and safe(w,bv,P1,p1,8):a.append(145+r*8+c)
+   v_overlap=(r>0 and v&(b>>8)) or (r<7 and v&(b<<8))
+   if not v_overlap and safe(w,bv,P0,p0,0) and safe(w,bv,P1,p1,8):a.append(145+r*8+c)
  return a
 
 def apply_unchecked(s,a):
