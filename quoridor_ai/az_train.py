@@ -155,8 +155,17 @@ def _generate_selfplay(net, device, workers, kwargs):
                          concurrent_games=min(in_flight, count))
             payloads.append((str(weights_path), arch, str(device), shard))
         ctx = multiprocessing.get_context('spawn')
-        with ctx.Pool(workers) as pool:
+        pool = ctx.Pool(workers)
+        try:
             results = pool.map(_selfplay_worker, payloads)
+            # close() then join() lets the workers exit on their own; the context
+            # manager's terminate() kills them mid-cleanup and leaks their semaphores.
+            pool.close()
+        except BaseException:
+            pool.terminate()
+            raise
+        finally:
+            pool.join()
     finally:
         weights_path.unlink(missing_ok=True)
 
@@ -197,7 +206,8 @@ def run(config, output, resume=True, init=None, device=None):
         raise FileNotFoundError(f'--init checkpoint does not exist: {init}')
     fresh_run = not (resume and ck.exists())
     if fresh_run:
-        managed = (ck, best_ck, out / 'metrics.csv', out / 'baseline.csv', out / 'status.json')
+        managed = (ck, best_ck, out / 'metrics.csv', out / 'baseline.csv',
+                   out / 'status.json', out / 'replay')
         existing = [path.name for path in managed if path.exists()]
         if existing:
             raise FileExistsError(f'a fresh run requires an empty output directory; found {existing}')
@@ -243,7 +253,11 @@ def run(config, output, resume=True, init=None, device=None):
             scaler.load_state_dict(sc)   # GradScaler rejects an empty dict.
         if d.get('ema'):
             ema.load(d['ema'])
-        replay.extend(d.get('replay', []))
+        # A disk buffer survived the restart and already holds these samples; appending
+        # the checkpoint tail again would duplicate the most recent iterations. Only an
+        # empty buffer - a --init run, or one whose geometry changed - needs seeding.
+        if not isinstance(replay, DiskReplay) or len(replay) == 0:
+            replay.extend(d.get('replay', []))
         start = int(d['iteration']) + 1
         gen = int(d.get('generation', 0))
         # Checkpoints written before global_step existed: reconstruct it from the config
@@ -440,8 +454,10 @@ def run(config, output, resume=True, init=None, device=None):
                        'replay': recent,
                        'config': c, 'encoding': enc, 'generation': gen, 'global_step': gstep,
                        'rules_version': RULES_VERSION})
-        (out / 'status.json').write_text(json.dumps(dict(zip(cols.split(','), row, strict=True)),
-                                                    indent=2, default=str))
+        (out / 'status.json').write_text(json.dumps(
+            {k: (None if isinstance(v, float) and math.isnan(v) else v)
+             for k, v in zip(cols.split(','), row, strict=True)},
+            indent=2, default=str))
         print(f'iteration={it} gen={gen} games={sp["games"]} samples={sp["samples"]} '
               f'plies={sp["avg_plies"]:.0f} loss={(pl + vl) / steps:.4f} lr={lr_now:.2e} '
               f'{sec:.0f}s vram={vram:.0f}MB', flush=True)

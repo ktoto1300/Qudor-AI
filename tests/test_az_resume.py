@@ -206,14 +206,16 @@ def test_worker_concurrency_is_a_global_limit(monkeypatch, tmp_path):
     class Pool:
         def __init__(self, workers):
             self.workers = workers
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            return False
         def map(self, fn, items):
             payloads.extend(items)
             return [([], {'games': item[3]['games'], 'samples': 0, 'avg_plies': 0,
                           'p0_wins': 0, 'draws': item[3]['games']}) for item in items]
+        def close(self):
+            pass
+        def terminate(self):
+            pass
+        def join(self):
+            pass
 
     class Context:
         def Pool(self, workers):
