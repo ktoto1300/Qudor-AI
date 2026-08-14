@@ -389,7 +389,8 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
 def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_frac=0.25,
              c_puct=1.6, max_plies=220, temp_moves=20, temp=1.0, noise_frac=0.25,
              alpha_scale=10.0, resign_v=-0.95, resign_streak=4, resign_skip=0.1,
-             seed=0, progress=None, gumbel=False, gumbel_cap=16):
+             seed=0, progress=None, gumbel=False, gumbel_cap=16,
+             concurrent_games=None, game_offset=0, total_games=None):
     """Play `games` games with MCTS and return (samples, stats).
 
     Each sample is (encoded_state, pi, z, q): pi is the improved root policy in the
@@ -401,10 +402,27 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
     completed improved policy; `sims` can then be an order of magnitude smaller. With
     `gumbel=False` it is textbook AlphaZero: PUCT everywhere, visit counts as the target.
     """
+    if games < 0:
+        raise ValueError('games must be non-negative')
+    total_games = games if total_games is None else int(total_games)
+    if game_offset < 0 or total_games < game_offset + games:
+        raise ValueError('game range must fit inside total_games')
+    concurrent_games = games if concurrent_games is None else int(concurrent_games)
+    if games and concurrent_games <= 0:
+        raise ValueError('concurrent_games must be positive')
+    concurrent_games = min(games, concurrent_games)
     canon = is_canonical(encoding)
     rng = np.random.default_rng(seed)
-    live = [_Game(np.random.default_rng(seed * 7919 + i), rng.random() >= resign_skip)
-            for i in range(games)]
+    resign_flags = rng.random(total_games) >= resign_skip
+    next_game = 0
+
+    def _new_game(i):
+        logical_id = game_offset + i
+        return _Game(np.random.default_rng(seed * 7919 + logical_id),
+                     bool(resign_flags[logical_id]))
+
+    live = [_new_game(i) for i in range(concurrent_games)]
+    next_game = concurrent_games
     done = []
 
     def _arm(g, node):
@@ -450,7 +468,7 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
                     pending.append(leaf)
                     paths.append(path)
             _evaluate(net, pending, device, encoding, canon)
-            for leaf, path in zip(pending, paths):
+            for leaf, path in zip(pending, paths, strict=True):
                 _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
 
         # --- move phase ---
@@ -514,6 +532,13 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
 
             g.root = kid                                 # tree reuse
             still.append(g)
+
+        # Keep the inference batch dense: as games finish, replace them from the same
+        # deterministic stream instead of letting one large starting cohort drain to one.
+        add = min(concurrent_games - len(still), games - next_game)
+        if add:
+            still.extend(_new_game(i) for i in range(next_game, next_game + add))
+            next_game += add
 
         # One batched forward pass for every new root, instead of one call per game.
         _evaluate(net, [g.root for g in still if g.root.acts is None], device, encoding, canon)
