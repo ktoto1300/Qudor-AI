@@ -11,6 +11,8 @@ from quoridor_ai.core.engine import ACTION_SIZE, State, legal_actions
 from quoridor_ai.model import (
     IncompatibleCheckpoint, PolicyValueNet, net_from_checkpoint, planes_of,
 )
+from quoridor_ai.arena import choose
+from quoridor_ai.selfplay import batched_selfplay
 
 DEV = torch.device("cpu")
 
@@ -114,3 +116,31 @@ def test_search_explores_more_actions_with_more_sims():
     many = batched_search(net, [State()], DEV, sims=64)[0]
     assert np.count_nonzero(many) >= np.count_nonzero(few)
     assert many.max() > 0
+
+
+class _PeakedV3(torch.nn.Module):
+    planes = PLANES_BY_VERSION[3]
+
+    def forward(self, x):
+        logits = torch.full((len(x), ACTION_SIZE), -20.0, device=x.device)
+        logits[:, 67] = 20.0
+        return logits, torch.zeros(len(x), device=x.device)
+
+
+def test_legacy_arena_decodes_v3_policy_actions():
+    s = State(p0=67, p1=4, player=1, ply=1)
+    assert 13 in legal_actions(s)
+    assert choose(_PeakedV3(), s, DEV) == 13
+
+
+def test_legacy_batched_mcts_uses_v3_canonical_priors():
+    s = State(p0=67, p1=4, player=1, ply=1)
+    pi = batched_search(_PeakedV3(), [s], DEV, sims=1, encoding=3)[0]
+    assert int(pi.argmax()) == 13
+
+
+def test_legacy_selfplay_stores_v3_targets_in_canonical_frame():
+    data, stats = batched_selfplay(_PeakedV3(), DEV, games=1, max_plies=2, encoding=3)
+    assert stats['positions'] == 2
+    assert int(data[0][1].argmax()) == 67
+    assert int(data[1][1].argmax()) == 67

@@ -1,6 +1,6 @@
 import math,numpy as np,torch
 from .core.engine import legal_actions,apply_unchecked,ACTION_SIZE
-from .core.encoding import encode_batch
+from .core.encoding import canonical_actions,encode_batch,is_canonical
 class Node:
  def __init__(self,s,p=1.):self.s=s;self.p=p;self.n=0;self.w=0.;self.children={}
  @property
@@ -18,14 +18,14 @@ def _expand(net,nodes,device,encoding=1):
  with torch.inference_mode(),torch.autocast(device_type=device.type,enabled=device.type=='cuda',dtype=torch.float16):logits,values=net(x)
  vals=values.float().cpu().numpy();out={}
  for i,n in enumerate(live):
-  acts=legal_actions(n.s);z=logits[i,acts].float().cpu().numpy();z-=z.max();p=np.exp(z);p/=p.sum()
-  n.children={a:Node(apply_unchecked(n.s,a),float(v)) for a,v in zip(acts,p)};out[id(n)]=float(vals[i])
+  acts=legal_actions(n.s);policy_acts=canonical_actions(acts,n.s.player) if is_canonical(encoding) else acts;z=logits[i,policy_acts].float().cpu().numpy();z-=z.max();p=np.exp(z);p/=p.sum()
+  n.children={a:Node(apply_unchecked(n.s,a),float(v)) for a,v in zip(acts,p,strict=True)};out[id(n)]=float(vals[i])
  return out
 def batched_search(net,states,device,sims=64,c_puct=1.5,encoding=1):
  """Batched MCTS with PUCT selection, one tree per state.
 
- encoding: encoder version (1 or 2) matching the network's input planes; default 1 for
-           backward compatibility with checkpoints trained before the encoder was versioned.
+  encoding: encoder version matching the network's input planes; default 1 for backward
+            compatibility. The returned policy is always in the engine's real action frame.
  """
  roots=[Node(s) for s in states];_expand(net,roots,device,encoding)
  for _ in range(sims):

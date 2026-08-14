@@ -1,9 +1,9 @@
-import argparse,torch,random,json,math
+import argparse,torch,json,math
 from pathlib import Path
 import numpy as np
-from .model import PolicyValueNet,net_from_checkpoint
+from .model import net_from_checkpoint
 from .core.engine import State,legal_actions,apply_unchecked
-from .core.encoding import encode_batch,version_for_planes
+from .core.encoding import canonical_actions,encode_batch,version_for_planes
 from .safe_loader import load_checkpoint
 
 def load(path,device):
@@ -14,9 +14,9 @@ def choose(m,s,d,temp=0.0,rng=None):
  Sampling matters for the arena: with pure argmax both nets are deterministic, so all
  games are byte-identical and the measured win rate carries no information.
  """
- a=legal_actions(s);x=torch.from_numpy(encode_batch([s],version_for_planes(m.planes))).to(d)
+ a=legal_actions(s);enc=version_for_planes(m.planes);ca=canonical_actions(a,s.player) if enc>=3 else a;x=torch.from_numpy(encode_batch([s],enc)).to(d)
  with torch.inference_mode():z,_=m(x)
- logits=z[0,a]
+ logits=z[0,ca]
  if temp<=0:return a[int(logits.argmax())]
  p=torch.softmax(logits.float()/temp,0).cpu().numpy()
  return a[int((rng or np.random).choice(len(a),p=p/p.sum()))]

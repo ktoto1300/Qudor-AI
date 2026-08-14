@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from .model import net_from_checkpoint
 from .core.engine import State,apply_unchecked
-from .core.encoding import encode,version_for_planes
+from .core.encoding import MIRROR,encode,is_canonical,version_for_planes
 from .batched_mcts import batched_search
 from .safe_loader import load_checkpoint
 
@@ -18,10 +18,10 @@ def run(config,checkpoint,output,games=16,sims=64,steps=100):
   for j,i in enumerate(ids):
    pi=pis[j]
    if pi.sum()<=0:done[i]=True;continue  # no visits => terminal or no legal move
-   a=int(np.random.choice(len(pi),p=pi));trajectories[i].append((encode(states[i],enc),pi,states[i].player));states[i]=apply_unchecked(states[i],a);done[i]=states[i].winner is not None or states[i].ply>=c['max_plies']
+   a=int(np.random.choice(len(pi),p=pi));target=pi[MIRROR] if is_canonical(enc) and states[i].player==1 else pi;trajectories[i].append((encode(states[i],enc),target,states[i].player));states[i]=apply_unchecked(states[i],a);done[i]=states[i].winner is not None or states[i].ply>=c['max_plies']
   print(f'mcts active={len(ids)} total_positions={sum(map(len,trajectories))}',flush=True)
  data=[]
- for s,tr in zip(states,trajectories):data += [(x,pi,0 if s.winner is None else (1 if s.winner==pl else -1)) for x,pi,pl in tr]
+ for s,tr in zip(states,trajectories,strict=True):data += [(x,pi,0 if s.winner is None else (1 if s.winner==pl else -1)) for x,pi,pl in tr]
  if not data:raise RuntimeError('mcts finetune produced no positions')
  opt=torch.optim.AdamW(net.parameters(),lr=c['lr']*.25)
  for _ in range(steps):
