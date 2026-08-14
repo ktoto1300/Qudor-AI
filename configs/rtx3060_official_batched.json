@@ -25,6 +25,7 @@
   "value_blend_q": 0.4,
   "ema_decay": 0.999,
   "replay": 500000,
+  "replay_on_disk": true,
   "checkpoint_replay": 25000,
   "save_every": 5,
   "gate_every": 20,

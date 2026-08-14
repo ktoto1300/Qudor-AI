@@ -39,8 +39,9 @@ from .az_arena import compare
 from .az_selfplay import selfplay
 from .baseline import BOTS, play as play_baseline
 from .core.encoding import FLIPLR, PLANES_BY_VERSION, BEST_VERSION
-from .core.engine import RULES_VERSION
+from .core.engine import ACTION_SIZE, RULES_VERSION
 from .model import PolicyValueNet, arch_of, net_from_checkpoint
+from .replay import DiskReplay
 from .runtime import configure_threads, resolve_device
 from .safe_loader import load_checkpoint
 
@@ -223,7 +224,14 @@ def run(config, output, resume=True, init=None, device=None):
                          bool(c.get('se', True))).to(device, memory_format=torch.channels_last)
     opt = torch.optim.AdamW(net.parameters(), lr=c['lr'], weight_decay=float(c.get('weight_decay', 1e-4)))
     scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda')
-    replay = deque(maxlen=int(c['replay']))
+    # A 500k-sample buffer is ~3 GB of float32; on a small box that is what runs the
+    # trainer out of memory, so it can live in memmaps and let the page cache decide
+    # what stays resident.
+    if bool(c.get('replay_on_disk', False)):
+        replay = DiskReplay(out / 'replay', int(c['replay']),
+                            PLANES_BY_VERSION[enc], ACTION_SIZE)
+    else:
+        replay = deque(maxlen=int(c['replay']))
     ema = EMA(net, float(c.get('ema_decay', 0.999)))
     start, gen, gstep = 0, 0, 0
 
@@ -314,7 +322,9 @@ def run(config, output, resume=True, init=None, device=None):
         net.train()
         steps = int(c['steps'])
         batch = int(c['batch'])
-        pool = list(replay)
+        # A disk-backed buffer is indexable in place; materialising it would defeat
+        # the point, so only the deque is copied to a list.
+        pool = replay if isinstance(replay, DiskReplay) else list(replay)
         pool_n = len(pool)
         if pool_n == 0:
             raise RuntimeError(
@@ -422,9 +432,12 @@ def run(config, output, resume=True, init=None, device=None):
         # time would push over a gigabyte an hour at Google Drive. save_every trades a
         # bounded amount of redone work for that bandwidth; the last iteration always saves.
         if (it + 1) % save_every == 0 or it == iterations - 1:
+            keep = int(c['checkpoint_replay'])
+            recent = (replay.tail(keep) if isinstance(replay, DiskReplay)
+                      else list(replay)[-keep:])
             _save(ck, {'iteration': it, 'model': net.state_dict(), 'optimizer': opt.state_dict(),
                        'scaler': scaler.state_dict(), 'ema': ema.shadow,
-                       'replay': list(replay)[-int(c['checkpoint_replay']):],
+                       'replay': recent,
                        'config': c, 'encoding': enc, 'generation': gen, 'global_step': gstep,
                        'rules_version': RULES_VERSION})
         (out / 'status.json').write_text(json.dumps(dict(zip(cols.split(','), row, strict=True)),
