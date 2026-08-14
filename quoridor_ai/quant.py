@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .core.encoding import PLANES_BY_VERSION, encode_batch
+from .core.encoding import encode_batch
 from .core.engine import State, apply_unchecked, legal_actions
 
 _CALIB_POSITIONS = 256

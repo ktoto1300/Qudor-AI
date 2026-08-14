@@ -22,7 +22,6 @@ import json
 import math
 from pathlib import Path
 
-import numpy as np
 
 from .az_arena import _Duel, _search_round
 from .core.encoding import version_for_planes

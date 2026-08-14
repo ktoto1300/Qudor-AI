@@ -10,7 +10,7 @@ def search(net,state,device,sims=64,c_puct=1.5,noise=True):
  root=Node(state);_expand(net,[root],device)
  if noise and root.children:
   keys=list(root.children);d=np.random.dirichlet([.3]*len(keys))
-  for k,x in zip(keys,d):root.children[k].prior=.75*root.children[k].prior+.25*x
+  for k,x in zip(keys,d,strict=True):root.children[k].prior=.75*root.children[k].prior+.25*x
  for _ in range(sims):
   n=root;path=[]
   while n.children:
@@ -29,5 +29,5 @@ def _expand(net,nodes,device):
  with torch.inference_mode(),torch.autocast(device_type=device.type,enabled=device.type=='cuda',dtype=torch.float16):logits,vals=net(x)
  for i,n in enumerate(nodes):
   acts=legal_actions(n.s);z=logits[i,acts].float().cpu().numpy();z-=z.max();p=np.exp(z);p/=p.sum()
-  n.children={a:Node(apply_unchecked(n.s,a),float(pr)) for a,pr in zip(acts,p)}
+  n.children={a:Node(apply_unchecked(n.s,a),float(pr)) for a,pr in zip(acts,p,strict=True)}
  return vals.float().cpu().tolist()

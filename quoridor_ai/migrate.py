@@ -1,4 +1,4 @@
-import zipfile,io,torch,json
+import zipfile,io,json
 from pathlib import Path
 from .safe_loader import load_checkpoint
 def inspect_and_extract(zip_path,out):

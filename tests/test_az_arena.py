@@ -3,7 +3,6 @@
 A colour-assignment or result-mapping bug here does not crash - it silently promotes the
 wrong network, which looks like "training plateaued" many iterations later.
 """
-import numpy as np
 import pytest
 import torch
 

@@ -15,10 +15,9 @@ import math
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from .az_selfplay import (Node, _Sched, _backup, _evaluate, _improved_policy, _select,
-                          _select_gumbel, _terminal_value)
+                          _select_gumbel)
 from .core.encoding import is_canonical, version_for_planes
 from .core.engine import State, apply_unchecked
 from .model import net_from_checkpoint
@@ -77,7 +76,7 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
                 pending.append(leaf)
                 paths.append(path)
         _evaluate(net, pending, device, enc, canon)
-        for leaf, path in zip(pending, paths):
+        for leaf, path in zip(pending, paths, strict=True):
             _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
     for d in group:
         if gumbel:

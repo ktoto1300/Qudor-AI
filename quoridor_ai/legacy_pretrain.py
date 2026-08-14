@@ -1,4 +1,4 @@
-import argparse,torch,random,json
+import argparse,torch,random
 from pathlib import Path
 import numpy as np
 from .model import PolicyValueNet
