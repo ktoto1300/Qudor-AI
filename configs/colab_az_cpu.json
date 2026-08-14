@@ -11,8 +11,8 @@
   "device": "cpu",
   "threads": 2,
 
-  "_total_steps": "500 * 160 from colab_az_gumbel.json. The cosine schedule must keep the GPU run's horizon, otherwise resuming here would restart the decay under a different curve.",
-  "total_steps": 80000,
+  "_total_steps": "Shared with the GPU profile so switching hardware keeps one learning-rate schedule.",
+  "total_steps": 320000,
 
   "gumbel": true,
   "gumbel_cap": 16,

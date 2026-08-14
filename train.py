@@ -33,6 +33,15 @@ CPU_CONFIG = ROOT / 'configs' / 'colab_az_cpu.json'
 DEFAULT_OUTPUT = ROOT / 'runs' / 'Checkpoints'
 
 
+def _validate_matched_configs(gpu: dict, cpu: dict) -> None:
+    """Hardware profiles for one lineage must share schedule and game semantics."""
+    for key in ('encoding', 'channels', 'blocks', 'se', 'gumbel', 'gumbel_cap',
+                'sims', 'fast_sims', 'full_frac', 'total_steps'):
+        if gpu.get(key) != cpu.get(key):
+            raise ValueError(f'CPU/GPU configs disagree on {key}: '
+                             f'{cpu.get(key)!r} != {gpu.get(key)!r}')
+
+
 def detect() -> tuple[str, str]:
     """(device, human-readable reason). Importing torch here keeps --help instant."""
     try:
@@ -83,6 +92,9 @@ def main() -> int:
             print(f'ОШИБКА: нет файла {cfg_path}', file=sys.stderr)
             return 2
         cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+        gpu_cfg = json.loads(GPU_CONFIG.read_text(encoding='utf-8'))
+        cpu_cfg = json.loads(CPU_CONFIG.read_text(encoding='utf-8'))
+        _validate_matched_configs(gpu_cfg, cpu_cfg)
         out = Path(a.output).resolve() if a.output else DEFAULT_OUTPUT
 
         print()
