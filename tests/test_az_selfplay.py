@@ -131,3 +131,45 @@ def test_gumbel_target_stays_inside_the_legal_action_set():
                        full_frac=1.0, max_plies=6, seed=11, gumbel=True)
     _, pi, _, _ = data[0]
     assert set(np.nonzero(pi)[0].tolist()) <= legal
+
+
+@pytest.mark.parametrize('gumbel', [False, True])
+def test_rolling_game_pool_preserves_each_games_search(gumbel):
+    """Pool size may change inference batching, never an individual tree's search."""
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    kwargs = dict(games=4, encoding=3, sims=4, fast_sims=2, full_frac=0.5,
+                  max_plies=10, seed=19, gumbel=gumbel, gumbel_cap=4,
+                  resign_skip=1.0)
+    all_live, all_stats = selfplay(net, torch.device('cpu'), concurrent_games=4, **kwargs)
+    rolling, rolling_stats = selfplay(net, torch.device('cpu'), concurrent_games=2, **kwargs)
+
+    assert all_stats == rolling_stats
+    assert len(all_live) == len(rolling)
+    for expected, actual in zip(all_live, rolling, strict=True):
+        assert np.array_equal(expected[0], actual[0])
+        assert np.allclose(expected[1], actual[1])
+        assert expected[2:] == pytest.approx(actual[2:], abs=1e-8)
+
+
+def test_selfplay_rejects_invalid_pool_sizes():
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    with pytest.raises(ValueError, match='concurrent_games'):
+        selfplay(net, torch.device('cpu'), games=2, concurrent_games=0)
+
+
+def test_game_shards_preserve_the_full_runs_rng_streams():
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    kwargs = dict(encoding=3, sims=4, fast_sims=2, full_frac=0.5, max_plies=8,
+                  seed=23, gumbel=True, gumbel_cap=4, resign_skip=1.0)
+    whole, whole_stats = selfplay(net, torch.device('cpu'), games=4, **kwargs)
+    left, left_stats = selfplay(net, torch.device('cpu'), games=2, game_offset=0,
+                                total_games=4, **kwargs)
+    right, right_stats = selfplay(net, torch.device('cpu'), games=2, game_offset=2,
+                                  total_games=4, **kwargs)
+    assert whole_stats['games'] == left_stats['games'] + right_stats['games']
+    combined = left + right
+    assert len(whole) == len(combined)
+    for expected, actual in zip(whole, combined, strict=True):
+        assert np.array_equal(expected[0], actual[0])
+        assert np.allclose(expected[1], actual[1])
+        assert expected[2:] == pytest.approx(actual[2:], abs=1e-8)

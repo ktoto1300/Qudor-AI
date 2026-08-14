@@ -24,8 +24,10 @@ import copy
 import csv
 import json
 import math
+import multiprocessing
 import os
 import random
+import tempfile
 import time
 from collections import deque
 from pathlib import Path
@@ -37,6 +39,7 @@ from .az_arena import compare
 from .az_selfplay import selfplay
 from .baseline import BOTS, play as play_baseline
 from .core.encoding import FLIPLR, PLANES_BY_VERSION, BEST_VERSION
+from .core.engine import RULES_VERSION
 from .model import PolicyValueNet, arch_of, net_from_checkpoint
 from .runtime import configure_threads, resolve_device
 from .safe_loader import load_checkpoint
@@ -111,6 +114,64 @@ def _save(path, payload):
     os.replace(tmp, path)
 
 
+def _selfplay_worker(payload):
+    """Run one independent game shard; each process owns its CUDA context and tree CPU work."""
+    weights_path, arch, device_name, kwargs = payload
+    torch.set_num_threads(1)
+    net = PolicyValueNet(*arch).to(device_name, memory_format=torch.channels_last)
+    net.load_state_dict(torch.load(weights_path, map_location=device_name, weights_only=True))
+    net.eval()
+    return selfplay(net, torch.device(device_name), **kwargs)
+
+
+def _generate_selfplay(net, device, workers, kwargs):
+    """Generate one iteration, sharding games without changing their logical RNG streams."""
+    kwargs = dict(kwargs)
+    weights_dir = Path(kwargs.pop('_weights_dir'))
+    games = int(kwargs['games'])
+    workers = min(max(1, int(workers)), games) if games else 1
+    if workers == 1:
+        return selfplay(net, device, **kwargs)
+
+    global_concurrent = min(int(kwargs['concurrent_games']), games)
+    workers = min(workers, global_concurrent)
+    counts = [games // workers + (i < games % workers) for i in range(workers)]
+    concurrent = [global_concurrent // workers + (i < global_concurrent % workers)
+                  for i in range(workers)]
+    offsets, offset = [], 0
+    for count in counts:
+        offsets.append(offset)
+        offset += count
+    arch = (net.channels, net.blocks, net.planes, net.se)
+    with tempfile.NamedTemporaryFile(dir=weights_dir, prefix='.selfplay_weights_',
+                                     suffix='.pt', delete=False) as handle:
+        weights_path = Path(handle.name)
+    torch.save(net.state_dict(), weights_path)
+    try:
+        payloads = []
+        for count, game_offset, in_flight in zip(counts, offsets, concurrent, strict=True):
+            shard = dict(kwargs, games=count, game_offset=game_offset, total_games=games,
+                         concurrent_games=min(in_flight, count))
+            payloads.append((str(weights_path), arch, str(device), shard))
+        ctx = multiprocessing.get_context('spawn')
+        with ctx.Pool(workers) as pool:
+            results = pool.map(_selfplay_worker, payloads)
+    finally:
+        weights_path.unlink(missing_ok=True)
+
+    data = []
+    stats = {'games': 0, 'samples': 0, 'avg_plies': 0.0,
+             'p0_wins': 0, 'draws': 0}
+    total_plies = 0.0
+    for shard_data, shard_stats in results:
+        data.extend(shard_data)
+        total_plies += shard_stats['avg_plies'] * shard_stats['games']
+        for key in ('games', 'samples', 'p0_wins', 'draws'):
+            stats[key] += shard_stats[key]
+    stats['avg_plies'] = total_plies / stats['games'] if stats['games'] else 0.0
+    return data, stats
+
+
 def run(config, output, resume=True, init=None, device=None):
     c = json.load(open(config, encoding='utf-8'))
     seed = int(c.get('seed', 42))
@@ -128,15 +189,31 @@ def run(config, output, resume=True, init=None, device=None):
         torch.backends.cudnn.allow_tf32 = True
     out = Path(output); out.mkdir(parents=True, exist_ok=True)
     ck, best_ck = out / 'latest.pt', out / 'best.pt'
+    # A killed run leaves its shard weights behind; they are ~13 MB each and never reused.
+    for stale in out.glob('.selfplay_weights_*.pt'):
+        stale.unlink(missing_ok=True)
+    if init and not Path(init).is_file():
+        raise FileNotFoundError(f'--init checkpoint does not exist: {init}')
+    fresh_run = not (resume and ck.exists())
+    if fresh_run:
+        managed = (ck, best_ck, out / 'metrics.csv', out / 'baseline.csv', out / 'status.json')
+        existing = [path.name for path in managed if path.exists()]
+        if existing:
+            raise FileExistsError(f'a fresh run requires an empty output directory; found {existing}')
 
     d = None
     if resume and ck.exists():
         d = load_checkpoint(ck, map_location=device)
+        found_rules = d.get('rules_version')
+        if found_rules != RULES_VERSION:
+            raise ValueError(
+                f'checkpoint rules_version={found_rules!r}, engine requires {RULES_VERSION}; '
+                'use --init with an empty output directory to transfer weights only')
         found = _encoding_of(d)
         if found != enc:
             print(f'config encoding={enc} ignored; resuming checkpoint uses v{found}', flush=True)
             enc = found
-    elif init and Path(init).exists():
+    elif init:
         d = load_checkpoint(init, map_location=device)
         found = _encoding_of(d)
         if found != enc:
@@ -180,19 +257,13 @@ def run(config, output, resume=True, init=None, device=None):
     elif d is not None:
         net.load_state_dict(d['model'])
         ema = EMA(net, float(c.get('ema_decay', 0.999)))
-        # An explicit --init continues the checkpoint's lineage too.  Starting the
-        # counters at zero would relabel gen-12 as gen-0 and make the next promotion
-        # look like generation 1.
-        start = int(d.get('iteration', -1)) + 1
-        gen = int(d.get('generation', 0))
-        gstep = int(d.get('global_step', start * int(d.get('config', c).get('steps', c['steps']))))
-        replay.extend(d.get('replay', []))
-        random.seed(seed + start); np.random.seed((seed + start) % (2 ** 32)); torch.manual_seed(seed + start)
-        print(f'initialized from {init} at iteration {start}, generation {gen}, replay {len(replay)}', flush=True)
+        # --init is weights-only: replay, optimiser, schedule and champion lineage
+        # belong to the old campaign and may use incompatible rules.
+        print(f'initialized weights from {init}; fresh lineage, replay 0', flush=True)
 
     if not best_ck.exists():
         _save(best_ck, {'iteration': -1, 'model': net.state_dict(), 'config': c,
-                        'encoding': enc, 'generation': 0})
+                        'encoding': enc, 'generation': 0, 'rules_version': RULES_VERSION})
 
     metrics = out / 'metrics.csv'
     cols = ('iteration,stage,generation,games,positions,replay,games_per_sec,positions_per_sec,'
@@ -226,14 +297,17 @@ def run(config, output, resume=True, init=None, device=None):
     for it in range(start, iterations):
         t0 = time.time()
         net.eval()
-        data, sp = selfplay(
-            net, device, games=int(c['games']), encoding=enc,
+        sp_kwargs = dict(games=int(c['games']), encoding=enc,
             sims=int(c.get('sims', 200)), fast_sims=int(c.get('fast_sims', 50)),
             full_frac=float(c.get('full_frac', 0.25)), c_puct=float(c.get('c_puct', 1.6)),
             max_plies=int(c['max_plies']), temp_moves=int(c.get('temp_moves', 20)),
             noise_frac=float(c.get('noise_frac', 0.25)), resign_v=float(c.get('resign_v', -0.95)),
             gumbel=bool(c.get('gumbel', False)), gumbel_cap=int(c.get('gumbel_cap', 16)),
-            seed=seed * 1000 + it)
+            seed=seed * 1000 + it,
+            concurrent_games=int(c.get('concurrent_games', c['games'])),
+            _weights_dir=str(out))
+        data, sp = _generate_selfplay(
+            net, device, int(c.get('selfplay_workers', 1)), sp_kwargs)
         replay.extend(data)
         sp_sec = max(1e-6, time.time() - t0)
 
@@ -248,7 +322,7 @@ def run(config, output, resume=True, init=None, device=None):
             )
         pl = vl = 0.0
         lr_now = c['lr']
-        for k in range(steps):
+        for _k in range(steps):
             lr_now = _lr_at(gstep, total_steps, c['lr'], int(c.get('warmup_steps', 200)))
             gstep += 1
             for g in opt.param_groups:
@@ -301,7 +375,8 @@ def run(config, output, resume=True, init=None, device=None):
                 promoted = name
                 sd = net.state_dict() if name == 'live' else ema.state_dict_for(net)
                 _save(best_ck, {'iteration': it, 'model': sd, 'config': c, 'encoding': enc,
-                                'generation': gen, 'gate': r})
+                                 'generation': gen, 'gate': r,
+                                 'rules_version': RULES_VERSION})
                 print(f'  promoted {name} -> generation {gen}', flush=True)
                 if baseline_games > 0:
                     champion = net if name == 'live' else ema_net
@@ -330,6 +405,7 @@ def run(config, output, resume=True, init=None, device=None):
                     # The EMA won, so it becomes the trunk; otherwise the raw net keeps
                     # drifting away from the strongest weights we have.
                     net.load_state_dict(ema.state_dict_for(net))
+                    opt.state.clear()
             del best, ema_net
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
@@ -349,8 +425,9 @@ def run(config, output, resume=True, init=None, device=None):
             _save(ck, {'iteration': it, 'model': net.state_dict(), 'optimizer': opt.state_dict(),
                        'scaler': scaler.state_dict(), 'ema': ema.shadow,
                        'replay': list(replay)[-int(c['checkpoint_replay']):],
-                       'config': c, 'encoding': enc, 'generation': gen, 'global_step': gstep})
-        (out / 'status.json').write_text(json.dumps(dict(zip(cols.split(','), row)),
+                       'config': c, 'encoding': enc, 'generation': gen, 'global_step': gstep,
+                       'rules_version': RULES_VERSION})
+        (out / 'status.json').write_text(json.dumps(dict(zip(cols.split(','), row, strict=True)),
                                                     indent=2, default=str))
         print(f'iteration={it} gen={gen} games={sp["games"]} samples={sp["samples"]} '
               f'plies={sp["avg_plies"]:.0f} loss={(pl + vl) / steps:.4f} lr={lr_now:.2e} '
@@ -361,7 +438,7 @@ def main():
     p = argparse.ArgumentParser(description='AlphaZero training for Quoridor')
     p.add_argument('--config', required=True)
     p.add_argument('--output', required=True)
-    p.add_argument('--init', help='checkpoint to start the weights from')
+    p.add_argument('--init', help='checkpoint to initialize weights from; starts a fresh lineage')
     p.add_argument('--no-resume', action='store_true')
     p.add_argument('--device', help="'cpu' or 'cuda'; overrides the config and autodetection")
     a = p.parse_args()
