@@ -60,7 +60,7 @@ def quality(ref_p, ref_v, p, v):
     # disagreement outside the top of the list still changes what gets explored.
     ref_top4 = ref_p.topk(4, dim=1).indices
     top4 = p.topk(4, dim=1).indices
-    same4 = float(np.mean([len(set(a.tolist()) & set(b.tolist())) / 4 for a, b in zip(ref_top4, top4)]))
+    same4 = float(np.mean([len(set(a.tolist()) & set(b.tolist())) / 4 for a, b in zip(ref_top4, top4, strict=True)]))
     return kl, top1, same4, float((ref_v - v).abs().max()), float((ref_v - v).abs().mean())
 
 
