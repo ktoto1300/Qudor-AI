@@ -15,7 +15,7 @@ Qudor includes a custom bitboard engine, versioned state encoding, policy/value 
 - Candidate promotion through MCTS-vs-MCTS arena gating.
 - Atomic checkpoint saves and restricted checkpoint loading.
 - Local HTTP viewer with CSRF protection, Origin checks, and project-contained model paths.
-- 93 automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, minimax, and HTTP API.
+- Automated tests covering the engine, encoder, model, search, self-play, arena, resume, baselines, minimax, and HTTP API.
 
 ## Quick start
 
@@ -61,7 +61,8 @@ python -m pytest -q
 python scripts/benchmark.py
 ```
 
-The last verified local test run passed 93 tests. The full suite takes roughly three minutes because the integration tests start the viewer and inspect available checkpoints.
+The exact test count is reported by `pytest`; the full suite takes roughly three minutes
+because the integration tests start the viewer and inspect available checkpoints.
 
 The viewer's settings panel can switch the search between the per-visit reference and the
 round-batched Gumbel variant (faster, slightly different search), enable int8
@@ -69,9 +70,10 @@ quantisation, and tune the per-move simulation budget.
 
 ## Checkpoints
 
-Published checkpoints live in `checkpoints/` and are stored via Git LFS. They were
-trained under an earlier restricted wall-placement variant (see below) with the v3 encoder
-and a 128×10 SE ResNet; the engine has since switched to official wall-chaining rules.
+Published checkpoints live in `checkpoints/` and are stored via Git LFS. They were trained
+before the wall-overlap correction described below, with the v3 encoder and a 128×10 SE
+ResNet. They must therefore be treated as legacy checkpoints rather than official-rules
+Quoridor models.
 
 | File | Generation | Iteration | Arena gate |
 | --- | --- | --- | --- |
@@ -85,11 +87,19 @@ won against the previous best network at gate settings from the training configu
 
 ### Rules variant and search note
 
-The engine implements official Quoridor rules: wall segments may touch end-to-end, and the
-only placement constraint besides slot occupancy is that a wall must not completely block a
-player's path to their goal row. Checkpoints published so far predate this switch — they
-were trained under a restricted variant that forbade end-to-end wall chains. Training runs
-started after the switch use the official rules.
+The engine implements official wall geometry: two walls of the same orientation may touch
+end-to-end when their slots are two positions apart, but adjacent slots are illegal because
+the walls would overlap along one board edge. Perpendicular walls may not cross in the same
+slot, and every placement must leave both players a path to their goal row.
+
+Before this correction, the engine incorrectly allowed same-orientation walls in adjacent
+slots. The campaign previously labelled "Official rules" was trained with that bug and its
+checkpoints are not valid official-rules models. A new official-rules campaign must start
+from a fresh replay buffer after this correction.
+
+Checkpoints carry a `rules_version`. Resume refuses an incompatible or unversioned
+checkpoint; `--init` transfers only model weights into a fresh replay buffer, optimiser,
+learning-rate schedule, metrics and generation lineage.
 
 The Gumbel implementation is an adaptation of the published method: its value mixture uses
 prior-weighted candidate Q values rather than the paper's visit-count-weighted sum. This is
@@ -110,7 +120,7 @@ Ti server campaign; the `gen13_*` files come from the earlier Colab campaign.
 | AlphaZero campaign | Google Colab, 15 GB GPU | Aug 7 20:18 → Aug 11 18:19+ | ≈ 94–121 h (est.) | 0 → 15 recorded, up to 17 per recollection |
 | Server run (`rtx3060_24h`) | RTX 3060 Ti 8 GB | Aug 12 21:29 → Aug 13 12:35 | 15 h 06 m — gens 0 → 12 |
 | Continuation | RTX 3060 Ti 8 GB | Aug 13 13:47 → Aug 13 17:39 | 3 h 52 m | 11 → 14 |
-| Official rules (current) | RTX 3060 Ti 8 GB | Aug 13 17:40 → now | running | 14 → (continuing) |
+| Wall-overlap bug campaign (invalid) | RTX 3060 Ti 8 GB | Aug 13 17:40 → Aug 14 | stopped | 14 → 15 |
 
 How the project changed along the way:
 
@@ -126,8 +136,9 @@ How the project changed along the way:
   iteration, gates every 20 iterations.
 - **Continuation:** resumed from the server run's `latest.pt` with a fresh replay
   buffer; both EMA and live candidates were promoted across gates 12 → 14.
-- **Official rules (current):** the engine switched to official wall-chaining rules;
-  training restarted from the gen-14 champion with a fresh replay buffer.
+- **Wall-overlap bug campaign (invalid):** training restarted from the gen-14 champion,
+  but the engine still allowed adjacent same-orientation walls to overlap. Its outputs must
+  not be presented as official-rules checkpoints.
 
 ### Arena gates
 

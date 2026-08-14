@@ -11,6 +11,7 @@ Run: python tools/wall_probe.py
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -91,15 +92,20 @@ def report(title: str, games: list[dict]) -> None:
 
 
 def main() -> None:
-    gen8, gen0 = load("runs/az_15gb/best.pt"), load("runs/az_15gb/best_gen0_backup.pt")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--trained', default='checkpoints/gen13_best.pt')
+    parser.add_argument('--baseline', help='optional untrained/older checkpoint')
+    args = parser.parse_args()
+    trained = load(args.trained)
+    baseline = load(args.baseline) if args.baseline else None
     print(f"{SIMS} симуляций на ход, поиск жадный (без температуры)")
 
-    report("Обученная сеть (поколение 8) против бегуна:",
-           [play(gen8, None, seat, 100 + seat) for seat in (0, 1)])
-    report("Необученная сеть (поколение 0) против бегуна:",
-           [play(gen0, None, seat, 300 + seat) for seat in (0, 1)])
-    report("Поколение 8 против самой себя (то, что я мерял раньше):",
-           [play(gen8, gen8, 0, 700)])
+    report(f"{args.trained} против бегуна:",
+           [play(trained, None, seat, 100 + seat) for seat in (0, 1)])
+    if baseline is not None:
+        report(f"{args.baseline} против бегуна:",
+               [play(baseline, None, seat, 300 + seat) for seat in (0, 1)])
+    report(f"{args.trained} против самой себя:", [play(trained, trained, 0, 700)])
 
 
 if __name__ == "__main__":
