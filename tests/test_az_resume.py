@@ -60,6 +60,7 @@ def _config(tmp_path, **over):
     return str(p)
 
 
+@pytest.mark.integration
 def test_a_resumed_run_continues_the_step_count(tmp_path):
     """Two 2-step iterations then two more must reach step 8, not restart at 4."""
     out = tmp_path / 'run'
@@ -73,6 +74,7 @@ def test_a_resumed_run_continues_the_step_count(tmp_path):
     assert second['global_step'] == 8
 
 
+@pytest.mark.integration
 def test_checkpoints_record_the_rules_version(tmp_path):
     from quoridor_ai.core.engine import RULES_VERSION
 
@@ -83,6 +85,7 @@ def test_checkpoints_record_the_rules_version(tmp_path):
     assert latest['rules_version'] == best['rules_version'] == RULES_VERSION
 
 
+@pytest.mark.integration
 def test_resume_rejects_checkpoint_from_unknown_rules(tmp_path):
     out = tmp_path / 'run'
     run(_config(tmp_path, iterations=1), str(out), resume=False)
@@ -93,6 +96,7 @@ def test_resume_rejects_checkpoint_from_unknown_rules(tmp_path):
         run(_config(tmp_path, iterations=2), str(out), resume=True)
 
 
+@pytest.mark.integration
 def test_init_is_weights_only_and_starts_a_fresh_lineage(tmp_path):
     source = tmp_path / 'source'
     run(_config(tmp_path, iterations=2), str(source), resume=False)
@@ -107,12 +111,14 @@ def test_init_is_weights_only_and_starts_a_fresh_lineage(tmp_path):
     assert len(fresh['replay']) < len(old['replay'])
 
 
+@pytest.mark.integration
 def test_missing_init_checkpoint_is_an_error(tmp_path):
     with pytest.raises(FileNotFoundError, match='does not exist'):
         run(_config(tmp_path, iterations=0), str(tmp_path / 'run'), resume=False,
             init=str(tmp_path / 'missing.pt'))
 
 
+@pytest.mark.integration
 def test_a_checkpoint_without_global_step_is_reconstructed_from_its_own_config(tmp_path):
     """Checkpoints predating global_step carry the config they ran under; use its steps."""
     out = tmp_path / 'run'
@@ -127,6 +133,7 @@ def test_a_checkpoint_without_global_step_is_reconstructed_from_its_own_config(t
     assert after['global_step'] == 2 * 160 + 2, 'should resume at 320, not at the new steps'
 
 
+@pytest.mark.integration
 def test_save_every_skips_intermediate_writes_but_never_the_last(tmp_path):
     """A ~150 MB latest.pt written every few minutes would swamp Drive's I/O quota."""
     out = tmp_path / 'run'
@@ -135,6 +142,7 @@ def test_save_every_skips_intermediate_writes_but_never_the_last(tmp_path):
     assert d['iteration'] == 2, 'the final iteration must always be saved'
 
 
+@pytest.mark.integration
 def test_promoted_champion_is_recorded_against_a_fixed_bot(tmp_path, monkeypatch):
     """Relative arena wins are not an absolute measure; promotions must get one."""
     import csv
@@ -160,6 +168,7 @@ def test_promoted_champion_is_recorded_against_a_fixed_bot(tmp_path, monkeypatch
     assert rows[0]['win_rate'] == str(2 / 3)
 
 
+@pytest.mark.integration
 def test_training_forwards_the_concurrent_game_limit(tmp_path, monkeypatch):
     import quoridor_ai.az_train as az_train
 
@@ -180,6 +189,7 @@ def test_training_forwards_the_concurrent_game_limit(tmp_path, monkeypatch):
     assert seen['concurrent_games'] == 1
 
 
+@pytest.mark.integration
 def test_no_resume_refuses_to_mix_with_existing_run(tmp_path):
     out = tmp_path / 'run'
     out.mkdir()
@@ -188,6 +198,7 @@ def test_no_resume_refuses_to_mix_with_existing_run(tmp_path):
         run(_config(tmp_path, iterations=0), str(out), resume=False)
 
 
+@pytest.mark.integration
 def test_init_refuses_to_reuse_an_old_champion(tmp_path):
     source = tmp_path / 'source'
     run(_config(tmp_path, iterations=1), str(source), resume=False)
@@ -231,6 +242,7 @@ def test_worker_concurrency_is_a_global_limit(monkeypatch, tmp_path):
     assert not list(Path(tmp_path).glob('.selfplay_weights_*.pt'))
 
 
+@pytest.mark.integration
 def test_ema_promotion_resets_optimizer_moments(tmp_path, monkeypatch):
     import quoridor_ai.az_train as az_train
 
@@ -247,3 +259,4 @@ def test_ema_promotion_resets_optimizer_moments(tmp_path, monkeypatch):
     for name, value in checkpoint['model'].items():
         if value.dtype.is_floating_point:
             assert torch.equal(value.float(), checkpoint['ema'][name])
+

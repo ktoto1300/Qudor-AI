@@ -33,12 +33,60 @@ class _Duel:
         self.root = None
         self.sched = None           # Sequential Halving state, Gumbel mode only
         self.result = None
+        self.forfeit = None         # set by harnesses whose opponent can abandon a game
 
     def mover_is_a(self):
         return (self.s.player == 0) != self.swap
 
 
-def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel, gumbel_cap):
+# A win rate of exactly 1.0 has no finite Elo difference, so the ratio is clamped. The
+# bound is deliberately loose: at 1e-4 a clean sweep reports +1600, which reads as
+# "past the range this many games can measure" rather than as a real figure.
+_ELO_CLAMP = 1e-4
+
+
+def elo_delta(win_rate: float) -> float:
+    """Elo difference implied by a win rate, clamped at both ends."""
+    wr = min(max(float(win_rate), 0.0), 1.0)
+    return 400 * math.log10(max(_ELO_CLAMP, wr) / max(_ELO_CLAMP, 1 - wr))
+
+
+def summarise(duels, **extra) -> dict:
+    """Match summary from a list of finished duels.
+
+    Every harness in the project - the promotion gate, the baseline bots, minimax and the
+    foreign-bot arena - reports through here so their numbers are directly comparable and
+    a reader never has to check whether two win rates counted draws the same way. Draws
+    count as a half. `win_rate_as_p0` is measured over the games this side opened, which is
+    what makes the first-move advantage visible instead of averaged away.
+
+    An empty match reports zeros rather than raising: `games=0` is a legitimate degenerate
+    call (a smoke run, a disabled evaluation) and it carries no information about strength,
+    so there is nothing to divide.
+    """
+    duels = list(duels)
+    if any(d.result is None for d in duels):
+        raise ValueError('every duel must be finished before it can be summarised')
+    scores = [d.result for d in duels]
+    first = [d.result for d in duels if not d.swap]
+    second = [d.result for d in duels if d.swap]
+    wr = sum(scores) / len(scores) if scores else 0.0
+    return {'games': len(scores),
+            'wins': sum(1 for s in scores if s == 1),
+            'draws': sum(1 for s in scores if s == 0.5),
+            'losses': sum(1 for s in scores if s == 0),
+            'win_rate': wr,
+            # No games means no evidence either way, so the neutral 0 rather than the
+            # -1600 that a 0.0 win rate would otherwise imply.
+            'elo_delta': elo_delta(wr) if scores else 0.0,
+            'win_rate_as_p0': sum(first) / len(first) if first else 0.0,
+            'win_rate_as_p1': sum(second) / len(second) if second else 0.0,
+            'avg_plies': sum(d.s.ply for d in duels) / len(duels) if duels else 0.0,
+            **extra}
+
+
+def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel, gumbel_cap,
+                  tanh_value_transform=False, root_visit_compensation=False):
     """Search, then move, for every duel in `group` - one batched pass per round.
 
     Shared by the promotion gate and by the baseline harness, so that a win rate against a
@@ -52,7 +100,9 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
     _evaluate(net, [d.root for d in group], device, enc, canon)
     if gumbel:
         for d in group:
-            d.sched = _Sched(d.root, d.rng, sims, gumbel_cap)
+            d.sched = _Sched(d.root, d.rng, sims, gumbel_cap,
+                             tanh_value_transform=tanh_value_transform,
+                             root_visit_compensation=root_visit_compensation)
         rounds = max(d.sched.budget for d in group)
     else:
         rounds = sims
@@ -63,12 +113,15 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
             if spent[id(d)] >= rounds:
                 continue
             if gumbel:
-                leaf, path = _select_gumbel(d, max_plies)
+                leaf, path = _select_gumbel(d, max_plies,
+                                            tanh_value_transform=tanh_value_transform,
+                                            root_visit_compensation=root_visit_compensation)
                 if leaf is None:            # halving schedule exhausted early
                     spent[id(d)] = rounds
                     continue
             else:
-                leaf, path = _select(d.root, c_puct, max_plies)
+                leaf, path = _select(d.root, c_puct, max_plies,
+                                    root_visit_compensation=root_visit_compensation)
             spent[id(d)] += 1
             if leaf.terminal is not None:
                 _backup(path, leaf.terminal)
@@ -84,7 +137,8 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
             # training-time exploration noise into the match: measured on a trained net it
             # agrees with a 400-sim search only 54% of the time, against 66% for plain PUCT
             # at the same budget.
-            probs = _improved_policy(d.root).astype(np.float64)
+            probs = _improved_policy(d.root, tanh_value_transform=tanh_value_transform,
+                                     root_visit_compensation=root_visit_compensation).astype(np.float64)
         else:
             probs = d.root.n.astype(np.float64)
             if probs.sum() <= 0:
@@ -101,7 +155,8 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
 
 
 def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a, enc_b,
-                gumbel=False, gumbel_cap=16):
+                gumbel=False, gumbel_cap=16, tanh_value_transform=False,
+                root_visit_compensation=False):
     duels = [_Duel(i % 2 == 1, seed * 104729 + i) for i in range(games)]
     live = list(duels)
     while live:
@@ -113,7 +168,8 @@ def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
                      and d.s.winner is None and d.s.ply < max_plies]
             if group:
                 _search_round(net, group, device, enc, sims, c_puct, temp, max_plies,
-                              gumbel, gumbel_cap)
+                              gumbel, gumbel_cap, tanh_value_transform=tanh_value_transform,
+                              root_visit_compensation=root_visit_compensation)
         still = []
         for d in live:
             if d.s.winner is not None:
@@ -122,25 +178,21 @@ def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
                 d.result = 0.5
             else:
                 still.append(d)
-                continue
         live = still
-    return [d.result for d in duels]
+    return duels
 
 
 def compare(a, b, device, games=40, sims=100, c_puct=1.6, temp=0.6, max_plies=220, seed=0,
-            gumbel=False, gumbel_cap=16):
+            gumbel=False, gumbel_cap=16, tanh_value_transform=False, root_visit_compensation=False):
     """Score net `a` against net `b`. Returns a dict; win_rate counts draws as a half."""
+    if games < 0:
+        raise ValueError('games must be non-negative')
     enc_a = version_for_planes(a.planes)
     enc_b = version_for_planes(b.planes)
-    scores = _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a, enc_b,
-                         gumbel, gumbel_cap)
-    wr = sum(scores) / max(1, len(scores))
-    elo = 400 * math.log10(max(1e-4, wr) / max(1e-4, 1 - wr))
-    return {'games': len(scores), 'wins': sum(1 for s in scores if s == 1),
-            'draws': sum(1 for s in scores if s == 0.5),
-            'losses': sum(1 for s in scores if s == 0),
-            'win_rate': wr, 'elo_delta': elo, 'sims': sims, 'temperature': temp,
-            'gumbel': bool(gumbel), 'seed': seed}
+    duels = _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
+                        enc_b, gumbel, gumbel_cap, tanh_value_transform=tanh_value_transform,
+                        root_visit_compensation=root_visit_compensation)
+    return summarise(duels, sims=sims, temperature=temp, gumbel=bool(gumbel), seed=seed)
 
 
 def run(candidate, best, games, out, sims=100, temp=0.6, seed=0, gumbel=False, device=None):

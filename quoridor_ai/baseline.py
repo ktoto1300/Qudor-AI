@@ -13,7 +13,9 @@ already computes BFS distance to goal for the v3 encoder, and the whole game is 
 between two shortest paths, so a competent beginner is a handful of lines on top of
 `dist_to_goal`.
 
-Usage:  python -m quoridor_ai.baseline --net runs/Checkpoints/best.pt --bot greedy --games 100
+Usage:
+  python -m quoridor_ai.baseline --net checkpoints/gen69_best.pt --bot all --games 100
+  qudor-eval-baseline --net checkpoints/gen69_best.pt --bot greedy --games 100 --json out.json
 """
 from __future__ import annotations
 
@@ -21,9 +23,9 @@ import argparse
 import json
 import math
 from pathlib import Path
+from typing import Any, Sequence
 
-
-from .az_arena import _Duel, _search_round
+from .az_arena import _Duel, _search_round, elo_delta, summarise
 from .core.encoding import version_for_planes
 from .core.engine import apply_unchecked, dist_field, legal_actions
 from .model import net_from_checkpoint
@@ -90,13 +92,65 @@ def greedy(s, rng):
 BOTS = {'rusher': rusher, 'greedy': greedy}
 
 
+def calc_confidence_intervals(scores: Sequence[Any], z: float = 1.95996) -> dict[str, Any]:
+    """Calculate 95% confidence intervals for win rate and Elo delta.
+
+    Draws count as 0.5. Sample variance accounts for draws directly.
+    Elo delta CI is obtained by mapping win rate CI bounds through elo_delta().
+    """
+    if len(scores) > 0 and hasattr(scores[0], 'result'):
+        raw_scores = [d.result for d in scores if d.result is not None]
+    else:
+        raw_scores = [float(s) for s in scores]
+
+    n = len(raw_scores)
+    if n == 0:
+        return {
+            'win_rate_ci_95': [0.0, 0.0],
+            'win_rate_se': 0.0,
+            'elo_delta_ci_95': [0.0, 0.0],
+            'elo_delta_se': 0.0,
+        }
+
+    wr = sum(raw_scores) / n
+    if n == 1:
+        e = elo_delta(wr)
+        return {
+            'win_rate_ci_95': [round(wr, 4), round(wr, 4)],
+            'win_rate_se': 0.0,
+            'elo_delta_ci_95': [round(e, 2), round(e, 2)],
+            'elo_delta_se': 0.0,
+        }
+
+    sample_var = sum((s - wr) ** 2 for s in raw_scores) / (n - 1)
+    wr_se = math.sqrt(max(0.0, sample_var) / n)
+
+    wr_low = max(0.0, wr - z * wr_se)
+    wr_high = min(1.0, wr + z * wr_se)
+
+    elo_low = elo_delta(wr_low)
+    elo_high = elo_delta(wr_high)
+
+    p_eff = min(max(wr, 1e-4), 1.0 - 1e-4)
+    elo_se = (400.0 / (math.log(10.0) * p_eff * (1.0 - p_eff))) * wr_se
+
+    return {
+        'win_rate_ci_95': [round(wr_low, 4), round(wr_high, 4)],
+        'win_rate_se': round(wr_se, 4),
+        'elo_delta_ci_95': [round(elo_low, 2), round(elo_high, 2)],
+        'elo_delta_se': round(elo_se, 2),
+    }
+
+
 def play(net, bot, device, games=100, sims=64, c_puct=1.6, temp=0.6, max_plies=220, seed=0,
-         gumbel=True, gumbel_cap=16):
+         gumbel=True, gumbel_cap=16, tanh_value_transform=False, root_visit_compensation=False):
     """Play `net`, with search, against `bot`. Same result shape as `az_arena.compare`.
 
     Colours alternate game by game. Player 0 has a real first-move advantage in Quoridor, so
     a single-colour match would measure that advantage as much as it measures strength.
     """
+    if games < 0:
+        raise ValueError('games must be non-negative')
     enc = version_for_planes(net.planes)
     duels = [_Duel(i % 2 == 1, seed * 104729 + i) for i in range(games)]
     live = list(duels)
@@ -105,7 +159,8 @@ def play(net, bot, device, games=100, sims=64, c_puct=1.6, temp=0.6, max_plies=2
                  and d.s.winner is None and d.s.ply < max_plies]
         if group:
             _search_round(net, group, device, enc, sims, c_puct, temp, max_plies,
-                          gumbel, gumbel_cap)
+                          gumbel, gumbel_cap, tanh_value_transform=tanh_value_transform,
+                          root_visit_compensation=root_visit_compensation)
         for d in live:
             # Re-checked here rather than reusing `group`: a game can end on the net's move,
             # and a finished board has no legal action for the bot to choose from.
@@ -120,52 +175,168 @@ def play(net, bot, device, games=100, sims=64, c_puct=1.6, temp=0.6, max_plies=2
             else:
                 still.append(d)
         live = still
-    scores = [d.result for d in duels]
-    first = [d.result for d in duels if not d.swap]
-    second = [d.result for d in duels if d.swap]
-    wr = sum(scores) / max(1, len(scores))
-    elo = 400 * math.log10(max(1e-4, wr) / max(1e-4, 1 - wr))
-    return {'games': len(scores), 'wins': sum(1 for s in scores if s == 1),
-            'draws': sum(1 for s in scores if s == 0.5),
-            'losses': sum(1 for s in scores if s == 0),
-            'win_rate': wr, 'elo_delta': elo,
-            'win_rate_as_p0': sum(first) / max(1, len(first)),
-            'win_rate_as_p1': sum(second) / max(1, len(second)),
-            'avg_plies': sum(d.s.ply for d in duels) / max(1, len(duels)),
-            'sims': sims, 'temperature': temp, 'gumbel': bool(gumbel), 'seed': seed}
+    res = summarise(duels, sims=sims, temperature=temp, gumbel=bool(gumbel), seed=seed)
+    ci = calc_confidence_intervals(duels)
+    res.update(ci)
+    return res
 
 
-def main():
-    p = argparse.ArgumentParser(description='Play a checkpoint against hand-written bots')
-    p.add_argument('--net', required=True)
-    p.add_argument('--bot', default='greedy', choices=sorted(BOTS))
-    p.add_argument('--games', type=int, default=100)
-    p.add_argument('--sims', type=int, default=64, help='matches the play-time default')
-    p.add_argument('--temp', type=float, default=0.6)
-    p.add_argument('--seed', type=int, default=0)
-    p.add_argument('--max-plies', type=int, default=220)
-    p.add_argument('--puct', action='store_true', help='PUCT search instead of Gumbel')
-    p.add_argument('--threads', type=int, help='intra-op threads; defaults to every core')
-    p.add_argument('--output', help='write the result dict here as JSON')
-    p.add_argument('--device', help="'cpu' or 'cuda'; overrides autodetection")
-    a = p.parse_args()
+def format_markdown_summary(results: list[dict[str, Any]] | dict[str, Any]) -> str:
+    """Format baseline evaluation results into a Markdown summary table."""
+    items = [results] if isinstance(results, dict) else list(results)
+    lines = [
+        "| Checkpoint | Bot | Games | W / D / L | Win Rate (95% CI) | Elo Delta (95% CI) | P0 / P1 Win Rate | Avg Plies | Search |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+    ]
+    for r in items:
+        net_name = Path(str(r.get("net", "model"))).name if r.get("net") else "model"
+        bot = str(r.get("bot", "unknown"))
+        games = int(r.get("games", 0))
+        w = int(r.get("wins", 0))
+        d = int(r.get("draws", 0))
+        loss = int(r.get("losses", 0))
+        wr = float(r.get("win_rate", 0.0))
+        wr_ci = r.get("win_rate_ci_95", [wr, wr])
+        elo = float(r.get("elo_delta", 0.0))
+        elo_ci = r.get("elo_delta_ci_95", [elo, elo])
+        p0 = float(r.get("win_rate_as_p0", 0.0))
+        p1 = float(r.get("win_rate_as_p1", 0.0))
+        avg_plies = float(r.get("avg_plies", 0.0))
+        sims = int(r.get("sims", 64))
+        mode = "Gumbel" if r.get("gumbel", True) else "PUCT"
+        search_desc = f"{mode} ({sims} sims)"
 
-    dev = resolve_device(a.device)
-    configure_threads(a.threads)
-    ck = load_checkpoint(a.net, map_location=dev)
+        wr_str = f"{wr * 100:.1f}% [{wr_ci[0] * 100:.1f}%, {wr_ci[1] * 100:.1f}%]"
+        elo_sign = "+" if elo > 0 else ""
+        elo_low_sign = "+" if elo_ci[0] > 0 else ""
+        elo_high_sign = "+" if elo_ci[1] > 0 else ""
+        elo_str = f"{elo_sign}{elo:.1f} [{elo_low_sign}{elo_ci[0]:.1f}, {elo_high_sign}{elo_ci[1]:.1f}]"
+        p0_p1_str = f"{p0 * 100:.1f}% / {p1 * 100:.1f}%"
+
+        lines.append(
+            f"| `{net_name}` | `{bot}` | {games} | {w} / {d} / {loss} | {wr_str} | {elo_str} | {p0_p1_str} | {avg_plies:.1f} | {search_desc} |"
+        )
+    return "\n".join(lines)
+
+
+def evaluate_checkpoint(
+    net_path: str | Path,
+    bot_names: Sequence[str] = ("greedy",),
+    games: int = 100,
+    sims: int = 64,
+    temp: float = 0.6,
+    seed: int = 0,
+    max_plies: int = 220,
+    gumbel: bool = True,
+    gumbel_cap: int = 16,
+    device: Any = None,
+    threads: int | None = None,
+    tanh_value_transform: bool = False,
+    root_visit_compensation: bool = False,
+) -> list[dict[str, Any]]:
+    """Evaluate a checkpoint against one or more deterministic baseline bots."""
+    dev = resolve_device(device)
+    if threads is not None:
+        configure_threads(threads)
+    ck = load_checkpoint(net_path, map_location=dev)
     net = net_from_checkpoint(ck, dev)
-    r = play(net, BOTS[a.bot], dev, a.games, a.sims, temp=a.temp, seed=a.seed,
-             max_plies=a.max_plies, gumbel=not a.puct)
-    r.update(bot=a.bot, net=str(a.net), generation=ck.get('generation'),
-             iteration=ck.get('iteration'), device=str(dev))
+
+    results: list[dict[str, Any]] = []
+    for bot_name in bot_names:
+        if bot_name not in BOTS:
+            raise ValueError(f"Unknown bot '{bot_name}'. Available: {sorted(BOTS)}")
+        r = play(
+            net,
+            BOTS[bot_name],
+            dev,
+            games=games,
+            sims=sims,
+            temp=temp,
+            seed=seed,
+            max_plies=max_plies,
+            gumbel=gumbel,
+            gumbel_cap=gumbel_cap,
+            tanh_value_transform=tanh_value_transform,
+            root_visit_compensation=root_visit_compensation,
+        )
+        r.update(
+            bot=bot_name,
+            net=str(net_path),
+            generation=ck.get("generation"),
+            iteration=ck.get("iteration"),
+            rules_version=ck.get("rules_version"),
+            device=str(dev),
+        )
+        results.append(r)
+    return results
+
+
+def main(args=None):
+    p = argparse.ArgumentParser(description="Play a checkpoint against hand-written baseline bots")
+    p.add_argument("--net", required=True, help="Path to checkpoint .pt file")
+    p.add_argument(
+        "--bot",
+        default="greedy",
+        help="Bot to play against ('greedy', 'rusher', or 'all'/'both' for all bots; default: greedy)",
+    )
+    p.add_argument("--games", type=int, default=100, help="Number of games to evaluate (default: 100)")
+    p.add_argument("--sims", type=int, default=64, help="Simulations per move (default: 64)")
+    p.add_argument("--temp", type=float, default=0.6, help="Opening move temperature (default: 0.6)")
+    p.add_argument("--seed", type=int, default=0, help="RNG seed (default: 0)")
+    p.add_argument("--max-plies", type=int, default=220, help="Max plies before draw (default: 220)")
+    p.add_argument("--puct", action="store_true", help="Use PUCT search instead of Gumbel")
+    p.add_argument("--search", choices=["gumbel", "puct"], help="Explicit search algorithm choice")
+    p.add_argument("--threads", type=int, help="PyTorch intra-op threads")
+    p.add_argument("--device", help="'cpu' or 'cuda'; overrides autodetection")
+    p.add_argument("--output", "-o", "--json", dest="output", help="Write evaluation results to JSON file")
+    p.add_argument("--markdown", "--md", dest="markdown", help="Write Markdown summary table to file")
+    p.add_argument("--quiet", "-q", action="store_true", help="Suppress verbose stdout logs")
+    a = p.parse_args(args)
+
+    gumbel = (a.search == "gumbel") if a.search else (not a.puct)
+    if a.bot in ("all", "both"):
+        selected_bots = sorted(BOTS)
+    elif "," in a.bot:
+        selected_bots = [b.strip() for b in a.bot.split(",") if b.strip()]
+    else:
+        selected_bots = [a.bot]
+
+    results = evaluate_checkpoint(
+        net_path=a.net,
+        bot_names=selected_bots,
+        games=a.games,
+        sims=a.sims,
+        temp=a.temp,
+        seed=a.seed,
+        max_plies=a.max_plies,
+        gumbel=gumbel,
+        device=a.device,
+        threads=a.threads,
+    )
+
+    md_summary = format_markdown_summary(results)
+
+    if not a.quiet:
+        for r in results:
+            print(
+                f"gen {r.get('generation')} vs {r['bot']}: {r['wins']}W {r['draws']}D {r['losses']}L "
+                f"of {r['games']}  ->  win rate {r['win_rate']:.3f} (95% CI: [{r['win_rate_ci_95'][0]:.3f}, {r['win_rate_ci_95'][1]:.3f}]) "
+                f"Elo delta: {r['elo_delta']:+.1f} (95% CI: [{r['elo_delta_ci_95'][0]:+.1f}, {r['elo_delta_ci_95'][1]:+.1f}])"
+            )
+            print(
+                f"  as player 0 {r['win_rate_as_p0']:.3f} | as player 1 {r['win_rate_as_p1']:.3f} "
+                f"| avg length {r['avg_plies']:.1f} plies"
+            )
+        print("\nMarkdown Summary:\n" + md_summary)
+
     if a.output:
-        Path(a.output).write_text(json.dumps(r, indent=2))
-    print(f"gen {r['generation']} vs {a.bot}: {r['wins']}W {r['draws']}D {r['losses']}L "
-          f"of {r['games']}  ->  win rate {r['win_rate']:.3f}")
-    print(f"  as player 0 {r['win_rate_as_p0']:.3f} | as player 1 {r['win_rate_as_p1']:.3f} "
-          f"| avg length {r['avg_plies']:.1f} plies")
-    return r
+        out_payload = results[0] if len(results) == 1 else results
+        Path(a.output).write_text(json.dumps(out_payload, indent=2), encoding="utf-8")
+    if a.markdown:
+        Path(a.markdown).write_text(md_summary + "\n", encoding="utf-8")
+
+    return results[0] if len(results) == 1 else results
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

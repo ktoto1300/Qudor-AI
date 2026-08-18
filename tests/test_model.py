@@ -118,6 +118,26 @@ def test_search_explores_more_actions_with_more_sims():
     assert many.max() > 0
 
 
+def test_search_handles_an_empty_state_list():
+    pi = batched_search(tiny(), [], DEV, sims=8)
+    assert pi.shape == (0, ACTION_SIZE)
+
+
+def test_search_respects_max_plies():
+    pi = batched_search(tiny(), [State(ply=220), State(ply=219), State(ply=4)],
+                        DEV, sims=8, max_plies=220)
+    assert pi[0].sum() == 0                       # already at the cap: called a draw
+    assert pi[1].sum() == pytest.approx(1.0)      # one move left before the cap
+    assert pi[2].sum() == pytest.approx(1.0)
+
+
+def test_search_restores_the_net_training_mode():
+    net = tiny().train()
+    assert net.training
+    batched_search(net, [State()], DEV, sims=4)
+    assert net.training                          # training resumed for the caller
+
+
 class _PeakedV3(torch.nn.Module):
     planes = PLANES_BY_VERSION[3]
 

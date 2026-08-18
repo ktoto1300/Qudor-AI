@@ -13,6 +13,8 @@ import pytest
 import app as webapp
 from quoridor_ai.core.engine import State, legal_actions
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def server():

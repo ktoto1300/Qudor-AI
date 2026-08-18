@@ -16,9 +16,13 @@ import os
 import sys
 from pathlib import Path
 
-BOTS = Path(os.environ.get('BOTS_DIR', r'C:\Users\kamil\Desktop\bots'))
-REPO = BOTS / 'marcobt15_Quoridor_Reinforcement_Learning'
-sys.path.insert(0, os.environ.get('QUDOR_REPO', r'C:\Users\kamil\Desktop\Qudor'))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from quoridor_ai.paths import bots_dir, repo_root     # noqa: E402
+
+REPO = bots_dir() / 'marcobt15_Quoridor_Reinforcement_Learning'
+sys.path.insert(0, str(repo_root()))
 
 import numpy as np
 from sb3_contrib import MaskablePPO

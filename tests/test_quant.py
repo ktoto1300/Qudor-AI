@@ -5,6 +5,9 @@ from quoridor_ai.core.encoding import PLANES_BY_VERSION, encode_batch
 from quoridor_ai.model import PolicyValueNet
 from quoridor_ai.quant import calibration_states, quantize_net, quantized_for
 
+pytestmark = pytest.mark.integration
+
+
 
 def _inputs(n, seed=0):
     return torch.from_numpy(encode_batch(calibration_states(n, seed), 3)).to(memory_format=torch.channels_last)

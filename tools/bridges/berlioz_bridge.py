@@ -14,11 +14,17 @@ import json
 import os
 import random
 import sys
+from pathlib import Path
 
-BOTS = os.environ.get('BOTS_DIR', r'C:\Users\kamil\Desktop\bots')
-ROOT = os.path.join(BOTS, 'berlioz10_quoridor-monte-carlo')
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from quoridor_ai.paths import bots_dir                # noqa: E402
+
+BOTS = bots_dir()
+ROOT = BOTS / 'berlioz10_quoridor-monte-carlo'
 if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+    sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 from game.game import Game                                    # noqa: E402

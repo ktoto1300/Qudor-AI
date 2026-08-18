@@ -122,6 +122,19 @@ def dist_to_goal(s,player):
  """Shortest path length for `player`, or _UNREACH when walled off entirely."""
  return dist_field(s,0 if player==0 else 8)[s.p0 if player==0 else s.p1]
 
+def pawn_dist_field(s,start):
+ """BFS distance from a single cell `start` to every cell, ignoring pawns (walls only).
+
+ Returned as a list of 81 ints with _UNREACH where a cell is unreachable.
+ """
+ w=s.h|s.v<<64;d=[_UNREACH]*81;d[start]=0;q=[start]
+ i=0
+ while i<len(q):
+  x=q[i];i+=1;nd=d[x]+1
+  for y,m in NB[x]:
+   if d[y]>nd and not w&m:d[y]=nd;q.append(y)
+ return d
+
 _PCAP=16                          # alternative paths kept per player, per call
 
 def _safe(w,bw,pool,start,goal):

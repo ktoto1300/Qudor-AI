@@ -41,13 +41,30 @@ class DiskReplay:
         self._load_meta(planes, actions)
 
     def _open(self, name, dtype, shape):
-        """Map an existing buffer of this exact geometry, or create it."""
+        """Map an existing buffer of this exact geometry, or create it.
+
+        A file whose header disagrees with the requested geometry is a corrupt or
+        foreign buffer. It is refused with an error that names the files involved
+        rather than truncated: deleting it loses every previous run's games, and the
+        tag embeds the geometry precisely so an honest geometry change maps a
+        different filename and never reaches this path.
+        """
         path = self.dir / name
         if path.exists():
             try:
-                return np.lib.format.open_memmap(path, mode='r+')
-            except (ValueError, OSError):
-                pass
+                arr = np.lib.format.open_memmap(path, mode='r+')
+            except (ValueError, OSError) as exc:     # not even a readable buffer
+                raise ValueError(
+                    f'unreadable replay buffer {path}: {exc}. The geometry tag says '
+                    f'this run wants {dtype.__name__}{shape}; remove the file only if '
+                    f'the run that created it is over') from exc
+            if arr.dtype != dtype or arr.shape != shape:
+                raise ValueError(
+                    f'replay buffer {path} has {arr.dtype}{arr.shape}, but this run '
+                    f'wants {dtype.__name__}{shape}. The geometry tag embeds the '
+                    f'desired layout, so an existing file with this name was created '
+                    f'by the same layout and is corrupt; delete it and restart')
+            return arr
         return np.lib.format.open_memmap(path, mode='w+', dtype=dtype, shape=shape)
 
     def _load_meta(self, planes: int, actions: int):
@@ -83,11 +100,21 @@ class DiskReplay:
 
     def extend(self, samples):
         for x, pi, z, q in samples:
+            x = np.asarray(x, np.float32)
+            pi = np.asarray(pi, np.float32)
+            if x.shape != self._x.shape[1:]:
+                raise ValueError(
+                    f'sample state has shape {x.shape}, buffer wants '
+                    f'{self._x.shape[1:]}')
+            if pi.shape != self._pi.shape[1:]:
+                raise ValueError(
+                    f'sample policy has shape {pi.shape}, buffer wants '
+                    f'{self._pi.shape[1:]}')
             j = self.head
             self._x[j] = x
             self._pi[j] = pi
-            self._z[j] = z
-            self._q[j] = q
+            self._z[j] = float(z)
+            self._q[j] = float(q)
             self.head = (j + 1) % self.capacity
             self.size = min(self.size + 1, self.capacity)
         self.flush()

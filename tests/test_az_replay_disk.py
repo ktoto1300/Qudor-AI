@@ -7,6 +7,8 @@ import torch
 from quoridor_ai.az_train import run
 from quoridor_ai.replay import DiskReplay
 
+pytestmark = pytest.mark.integration
+
 
 def _config(tmp_path, **over):
     c = dict(seed=1, encoding=3, iterations=2, channels=8, blocks=1, se=True, device='cpu',

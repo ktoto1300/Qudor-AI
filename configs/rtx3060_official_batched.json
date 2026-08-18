@@ -10,7 +10,7 @@
   "gumbel_cap": 16,
   "games": 256,
   "concurrent_games": 256,
-  "selfplay_workers": 4,
+  "selfplay_workers": 7,
   "sims": 24,
   "fast_sims": 8,
   "full_frac": 0.5,

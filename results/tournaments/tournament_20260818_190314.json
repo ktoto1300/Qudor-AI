@@ -1,0 +1,175 @@
+{
+  "metadata": {
+    "tournament_id": "tournament_20260818_190314",
+    "name": "Qudor Round-Robin Tournament (2 Engines)",
+    "created_at": "2026-08-18 19:03:19 UTC",
+    "elapsed_seconds": 5.63,
+    "total_matches": 1,
+    "total_games": 2,
+    "num_participants": 2,
+    "winner": "greedy"
+  },
+  "config": {
+    "format": "round-robin",
+    "games_per_matchup": 2,
+    "rounds": null,
+    "sims": 64,
+    "temp": 0.6,
+    "puct": false,
+    "gumbel": true,
+    "seed": 42,
+    "max_plies": 220,
+    "anchor_bot": null,
+    "anchor_rating": 1500.0
+  },
+  "participants": [
+    {
+      "name": "rusher",
+      "type": "baseline"
+    },
+    {
+      "name": "greedy",
+      "type": "baseline"
+    }
+  ],
+  "standings": [
+    {
+      "name": "greedy",
+      "type": "baseline",
+      "matches": 1,
+      "games": 2,
+      "points": 2.0,
+      "points_pct": 100.0,
+      "wins": 2,
+      "draws": 0,
+      "losses": 0,
+      "decisive_games": 2,
+      "decisive_pct": 100.0,
+      "forfeits_conceded": 0,
+      "forfeits_received": 0,
+      "avg_plies": 34.5,
+      "rating": 1631.38,
+      "rating_se": 296.74,
+      "rating_ci_95": [
+        1049.79,
+        2212.98
+      ],
+      "sonneborn_berger": 0.0,
+      "buchholz": 0.0,
+      "rank": 1
+    },
+    {
+      "name": "rusher",
+      "type": "baseline",
+      "matches": 1,
+      "games": 2,
+      "points": 0.0,
+      "points_pct": 0.0,
+      "wins": 0,
+      "draws": 0,
+      "losses": 2,
+      "decisive_games": 2,
+      "decisive_pct": 100.0,
+      "forfeits_conceded": 0,
+      "forfeits_received": 0,
+      "avg_plies": 34.5,
+      "rating": 1368.62,
+      "rating_se": 296.74,
+      "rating_ci_95": [
+        787.02,
+        1950.21
+      ],
+      "sonneborn_berger": 0.0,
+      "buchholz": 2.0,
+      "rank": 2
+    }
+  ],
+  "cross_table": {
+    "participants": [
+      "greedy",
+      "rusher"
+    ],
+    "rows": [
+      {
+        "name": "greedy",
+        "scores": {
+          "greedy": {
+            "self": true,
+            "text": "-"
+          },
+          "rusher": {
+            "self": false,
+            "score": 2.0,
+            "opp_score": 0.0,
+            "wins": 2,
+            "draws": 0,
+            "losses": 0,
+            "text": "2-0"
+          }
+        }
+      },
+      {
+        "name": "rusher",
+        "scores": {
+          "greedy": {
+            "self": false,
+            "score": 0.0,
+            "opp_score": 2.0,
+            "wins": 0,
+            "draws": 0,
+            "losses": 2,
+            "text": "0-2"
+          },
+          "rusher": {
+            "self": true,
+            "text": "-"
+          }
+        }
+      }
+    ]
+  },
+  "matchups": [
+    {
+      "participant_a": "rusher",
+      "participant_b": "greedy",
+      "games": 2,
+      "score_a": 0.0,
+      "score_b": 2.0,
+      "wins_a": 0,
+      "draws": 0,
+      "losses_a": 2,
+      "forfeits_a": 0,
+      "forfeits_b": 0,
+      "decisive_games": 2,
+      "avg_plies": 34.5,
+      "win_rate_a_p0": 0.0,
+      "win_rate_a_p1": 0.0,
+      "game_details": [
+        {
+          "game_idx": 0,
+          "p0_name": "rusher",
+          "p1_name": "greedy",
+          "score_p0": 0.0,
+          "score_p1": 1.0,
+          "plies": 34,
+          "winner_name": "greedy",
+          "forfeit_by": null,
+          "forfeit_reason": null,
+          "decisive": true
+        },
+        {
+          "game_idx": 1,
+          "p0_name": "greedy",
+          "p1_name": "rusher",
+          "score_p0": 1.0,
+          "score_p1": 0.0,
+          "plies": 35,
+          "winner_name": "greedy",
+          "forfeit_by": null,
+          "forfeit_reason": null,
+          "decisive": true
+        }
+      ]
+    }
+  ]
+}

@@ -20,10 +20,19 @@ Qudor includes a custom bitboard engine, versioned state encoding, policy/value 
 
 ## Quick start
 
-Requirements: Python 3.10+, NumPy, PyTorch. Install the package and development tools with:
+Requirements: Python 3.10+, NumPy, PyTorch.
+
+For standard installation with development tools:
 
 ```bash
 python -m pip install -e ".[dev]"
+```
+
+For exact byte-for-byte reproducibility using pinned dependencies (see [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json)):
+
+```bash
+python -m pip install -r requirements-lock.txt
+python -m pip install --no-deps -e .
 ```
 
 Run the viewer:
@@ -59,34 +68,39 @@ Training configurations live in `configs/`: `configs/local_cpu_az.json` for loca
 ```bash
 python -m compileall -q app.py train.py quoridor_ai tests
 python -m ruff check . --select F,E9,B
+# Run fast unit tests only:
+python -m pytest -m "not integration" -q
+# Run full test suite including integration tests:
 python -m pytest -q
 python scripts/benchmark.py
 ```
 
-The exact test count is reported by `pytest`; the full suite takes roughly three minutes
-because the integration tests start the viewer and inspect available checkpoints.
+The test suite is split into fast unit tests and slower integration tests using the `integration` marker:
+- `python -m pytest -m "not integration"` executes fast unit tests (engine rules, bitboard invariants, encoding permutations, model architectures, data structures, and deterministic heuristics).
+- `python -m pytest` executes the full suite including integration tests (HTTP web viewer server, full MCTS/minimax arena matches, multi-step training/resume runs, int8 quantization, and foreign-engine bridges).
 
 The viewer's settings panel can switch the search between the per-visit reference and the
 round-batched Gumbel variant (faster, slightly different search), enable int8
 quantisation, and tune the per-move simulation budget.
 
-CI (`.github/workflows/tests.yml`) runs compileall, ruff and pytest on Python 3.11 for every push and pull request.
+CI (`.github/workflows/tests.yml`) runs compileall, ruff, and pytest on Python 3.11 for every push and pull request.
+
 
 ## Checkpoints
 
 Published checkpoints live in `checkpoints/` and are stored via Git LFS. All of them use
-the v3 encoder and the 128×10 SE ResNet. The `gen69_*` files belong to the
-`official_rules_v2` lineage (`RULES_VERSION=2`, first official-rules-valid campaign,
-iteration 1419/1429). The `gen13_*` files come from the earlier Colab campaign and were
-trained before the wall-overlap correction described below, so they are legacy checkpoints
-rather than official-rules Quoridor models.
+the v3 16-plane encoder and the 128×10 SE ResNet architecture.
 
-| File | Generation | Iteration | Rules version | Arena gate |
-| --- | --- | --- | --- | --- |
-| `checkpoints/gen69_best.pt` | 69 | 1419 | 2 | — |
-| `checkpoints/gen69_latest.pt` | 69 | 1429 | 2 | — |
-| `checkpoints/gen13_best.pt` | 13 | 439 | — | 85.2% (54/64) |
-| `checkpoints/gen13_latest.pt` | 13 | 444 | — | — |
+- **`gen69_*`**: Belongs to the `official_rules_v2` lineage (`RULES_VERSION=2`, first official-rules-valid campaign, iteration 1419/1429). The `gen69_best.pt` champion achieved 100% win rates across all decisive games against 4 external engines in the overnight tournament (450 games, 0 losses, 0 draws). Full SHA-256 integrity hashes, architecture details, and baseline benchmarks are documented in [`MODEL_CARD.md`](MODEL_CARD.md).
+- **`gen85`**: Continuation champion under `official_rules_v2_batched`, evaluated in multi-engine matches (20 games per opponent at 64 sims, temperature 0.5; winning 20-0 against `berlioz10`, `marcobt15`, `dimitrijekaranfilovic`, `gorisanson`, `cryer`, and 11-9 against `sigma`).
+- **`gen13_*`**: Legacy checkpoints from the earlier Colab campaign trained before the wall-overlap geometry fix.
+
+| File | Generation | Iteration | Rules Version | Encoder | Architecture | Arena Gate / Note |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| [`checkpoints/gen69_best.pt`](checkpoints/gen69_best.pt) | 69 | 1419 | 2 | v3 (16 planes) | 128×10 SE ResNet | Tournament Champion ([`MODEL_CARD.md`](MODEL_CARD.md)) |
+| [`checkpoints/gen69_latest.pt`](checkpoints/gen69_latest.pt) | 69 | 1429 | 2 | v3 (16 planes) | 128×10 SE ResNet | Full training state (optimizer, replay) |
+| [`checkpoints/gen13_best.pt`](checkpoints/gen13_best.pt) | 13 | 439 | Legacy | v3 (16 planes) | 128×10 SE ResNet | 85.2% (54/64) (pre-v2 geometry) |
+| [`checkpoints/gen13_latest.pt`](checkpoints/gen13_latest.pt) | 13 | 444 | Legacy | v3 (16 planes) | 128×10 SE ResNet | Legacy training state |
 
 The viewer lists these in its model menu. The arena gate is the fraction of gated games
 won against the previous best network at gate settings from the training configuration.
@@ -332,9 +346,7 @@ ops/cloud/         Server/deploy/watch scripts, excluded from the public release
 
 Checkpoint files (`*.pt`, `*.pth`, `*.ckpt`), logs, `runs/`, local experiments and
 `ops/` are excluded through `.gitignore`. Published checkpoints in `checkpoints/` are
-stored via Git LFS. There is no dependency lock file yet; for full reproducibility the
-PyTorch and NumPy versions should also be pinned (the torch version on the GPU server is
-fixed in `ops/cloud/cloud_setup.sh`).
+stored via Git LFS. Dependencies and environments are pinned in [`requirements-lock.txt`](requirements-lock.txt) (Windows CPU development) and [`requirements-server-cuda.txt`](requirements-server-cuda.txt) (Linux CUDA server), with formal machine-readable manifests in [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json).
 
 ## Known limitations
 
@@ -343,21 +355,31 @@ fixed in `ops/cloud/cloud_setup.sh`).
 - The legacy modules are kept for reproducibility of old experiments and are not the recommended new pipeline.
 - Training results depend on the search configuration, the number of games, the random seed and the statistical power of the arena test.
 - The legacy `gen13_*` checkpoints were trained before the wall-overlap correction and do not follow the official rules; the `gen69_*` checkpoints are the first published official-rules models (`RULES_VERSION=2`).
-- The results against external engines come from smoke settings and are not a basis for strength claims.
+- The results against external engines come from open-source hobby/student engines and are not a basis for claims against commercial engines or human masters.
 - The `ops/cloud/` scripts contain machine-specific infrastructure defaults and are local-only.
 
-## Development priorities
+## Development priorities & Roadmap
 
-1. Pin the environment with a lock file or a reproducibility manifest.
-2. Split fast unit tests from slower integration tests.
-3. Keep large experiment outputs out of Git, leaving a manifest of metrics and launch parameters.
-4. Add a separate reproducible evaluation command against the baseline bots.
-5. Publish a model card with SHA256 and the training configuration for the official-rules checkpoint.
-6. Run a full tournament against external engines instead of smoke runs.
+### Completed Milestones
+1. [x] **Lockfile & Reproducibility Manifest:** Pinned local CPU development in [`requirements-lock.txt`](requirements-lock.txt) and GPU server training in [`requirements-server-cuda.txt`](requirements-server-cuda.txt); documented in [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json).
+2. [x] **Fast / Integration Test Suite Splitting:** Configured `pyproject.toml` markers separating fast unit tests (`python -m pytest -m "not integration"`) from full integration suites (`python -m pytest`).
+3. [x] **Experiment Artifacts & Metrics Manifest:** Tracked runs via manifests and structured summaries in `results/`, `cloud_server_watch.json`, and [`MODEL_CARD.md`](MODEL_CARD.md).
+4. [x] **Baseline Evaluation CLI:** Implemented `qudor-eval-baseline` (`quoridor_ai/baseline.py`) with Wilson score confidence intervals and Elo deltas against `rusher` and `greedy`.
+5. [x] **Model Card Publication:** Published [`MODEL_CARD.md`](MODEL_CARD.md) detailing architecture parameters, training methodology, SHA-256 hashes, and baseline benchmarks for `gen69_best.pt`.
+6. [x] **Multi-Engine Tournament Coordinator:** Implemented `tools/foreign_arena.py` with multi-process bridge adapters (`tools/bridges/`) testing against 6+ external Quoridor engines.
+
+### Next Roadmap Items (Phase 2)
+1. [ ] **Resign Margin with Structured Reason Logging (A4):** Calibrate `resign_v` from -0.95 to -0.90 with opponent safety checks and reason logging.
+2. [ ] **Visit-Averaged Policy-Target EMA (A5):** KataGo-style policy target smoothing ($p_t = (1-\beta) \cdot p_{\text{visit}} + \beta \cdot p_{\text{prev}}$) during exploration moves.
+3. [ ] **$\text{TD}(\lambda)$ Target Bootstrapping (B7):** Multi-step value target blending across game plies.
+4. [ ] **Prioritized Experience Replay (B8):** TD-error prioritized sampling for `DiskReplay`.
+5. [ ] **Opening Bank Initialization (B9):** Diverse opening book injection to stabilize initial self-play plies.
+6. [ ] **Retrograde Endgame Solver (C10):** Fast tablebase solver for boundary race endgames with $\le 1$ wall.
+7. [ ] **SaberNet / SimpleGEMM Speedup Blocks (C11):** Matrix multiplication kernels / lightweight architecture optimizations if batching becomes bottleneck.
 
 ## Publication status
 
-This is a research/software preview, not a claim of superhuman play. The included code is intended to make the engine and training pipeline inspectable and reproducible. A future release should publish one selected checkpoint separately with its model card, SHA256 hash, training configuration, and baseline results.
+This is a research/software preview, not a claim of superhuman play. The included code is intended to make the engine and training pipeline inspectable and reproducible. [`MODEL_CARD.md`](MODEL_CARD.md) is now published and active for the official-rules champion `gen69_best.pt` (`RULES_VERSION=2`), documenting its SHA-256 integrity hash, training configuration, and baseline tournament results. Future releases will continue to maintain and publish model cards for subsequent training campaigns.
 
 ## License
 

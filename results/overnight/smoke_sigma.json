@@ -1,0 +1,22 @@
+{
+  "games": 2,
+  "wins": 2,
+  "draws": 0,
+  "losses": 0,
+  "win_rate": 1.0,
+  "elo_delta": 1600.0,
+  "win_rate_as_p0": 1.0,
+  "win_rate_as_p1": 1.0,
+  "avg_plies": 61.5,
+  "opponent": "sigma",
+  "opp_forfeits": 0,
+  "sims": 48,
+  "temperature": 0.6,
+  "gumbel": true,
+  "seed": 3,
+  "net": "runs/cloud_metrics/gen69_best.pt",
+  "generation": 69,
+  "iteration": 1419,
+  "device": "cpu",
+  "net_name": "gen69_best.pt"
+}

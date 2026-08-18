@@ -36,7 +36,7 @@ import numpy as np
 import torch
 
 from .az_arena import compare
-from .az_selfplay import selfplay
+from .az_selfplay import selfplay, value_transform
 from .baseline import BOTS, play as play_baseline
 from .core.encoding import FLIPLR, PLANES_BY_VERSION, BEST_VERSION
 from .core.engine import ACTION_SIZE, RULES_VERSION
@@ -272,7 +272,8 @@ def run(config, output, resume=True, init=None, device=None):
         # Neither is fatal and neither is always wrong - but both belong in the first lines of
         # the log, not in a guess two hundred iterations later.
         was = d.get('config', {})
-        for k in ('gumbel', 'gumbel_cap', 'sims', 'fast_sims', 'full_frac', 'total_steps'):
+        for k in ('gumbel', 'gumbel_cap', 'sims', 'fast_sims', 'full_frac', 'total_steps',
+                  'tanh_value_transform', 'root_visit_compensation'):
             if k in was and was[k] != c.get(k):
                 print(f'  WARNING: {k} was {was[k]!r} in the checkpoint, now {c.get(k)!r}',
                       flush=True)
@@ -304,6 +305,8 @@ def run(config, output, resume=True, init=None, device=None):
     gate_sims = int(c.get('gate_sims', 100))
     gate_threshold = float(c.get('gate_threshold', 0.55))
     val_blend = float(c.get('value_blend_q', 0.4))
+    tanh_val = bool(c.get('tanh_value_transform', False))
+    root_comp = bool(c.get('root_visit_compensation', False))
     # The promotion gate is necessarily relative: it only tells us whether a candidate
     # beat the preceding champion.  Fixed hand-written bots give the run an absolute
     # reference point, but are expensive enough that we measure only a newly promoted
@@ -325,6 +328,7 @@ def run(config, output, resume=True, init=None, device=None):
             max_plies=int(c['max_plies']), temp_moves=int(c.get('temp_moves', 20)),
             noise_frac=float(c.get('noise_frac', 0.25)), resign_v=float(c.get('resign_v', -0.95)),
             gumbel=bool(c.get('gumbel', False)), gumbel_cap=int(c.get('gumbel_cap', 16)),
+            tanh_value_transform=tanh_val, root_visit_compensation=root_comp,
             seed=seed * 1000 + it,
             concurrent_games=int(c.get('concurrent_games', c['games'])),
             _weights_dir=str(out))
@@ -357,7 +361,12 @@ def run(config, output, resume=True, init=None, device=None):
                 x, pi, z, q = pool[i]
                 x, pi = _augment(np.asarray(x), np.asarray(pi), random.random() < 0.5)
                 xs.append(x); pis.append(pi)
-                zs.append((1 - val_blend) * z + val_blend * q)
+                if tanh_val:
+                    z_t = float(value_transform(z))
+                    q_t = float(value_transform(q))
+                    zs.append((1 - val_blend) * z_t + val_blend * q_t)
+                else:
+                    zs.append((1 - val_blend) * z + val_blend * q)
             x = torch.from_numpy(np.stack(xs)).float().to(device, memory_format=torch.channels_last)
             pi = torch.from_numpy(np.stack(pis)).float().to(device)
             z = torch.tensor(zs, dtype=torch.float32, device=device)

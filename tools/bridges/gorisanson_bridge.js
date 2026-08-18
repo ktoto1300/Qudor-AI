@@ -14,7 +14,8 @@ const readline = require('readline');
 const vm = require('vm');
 const path = require('path');
 
-const REPO = path.join(__dirname, '..', '..', '..', 'bots', 'gorisanson_quoridor-ai');
+const REPO = path.join(process.env.BOTS_DIR || path.join(__dirname, '..', '..', '..', 'bots'),
+                       'gorisanson_quoridor-ai');
 const SIMS = parseInt(process.env.GORISANSON_SIMS || '60000', 10);
 const UCT = 0.2;
 

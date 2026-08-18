@@ -79,7 +79,34 @@ def _expand(node: Node, logits_row, value, canon: bool):
     node.value = float(value)
 
 
-def _select(root: Node, c_puct: float, max_plies: int):
+def value_transform(v, alpha: float = 1.0):
+    """Monotonic value rescaling preserving [-1, 1] bounds: h(v) = tanh(v / alpha) / tanh(1 / alpha)."""
+    if alpha is None or alpha <= 0:
+        return v
+    scale = math.tanh(1.0 / alpha)
+    if isinstance(v, torch.Tensor):
+        return torch.tanh(v / alpha) / scale
+    if isinstance(v, np.ndarray):
+        return np.tanh(v / alpha) / scale
+    return math.tanh(float(v) / alpha) / scale
+
+
+def inv_value_transform(q, alpha: float = 1.0):
+    """Inverse of value_transform: h^-1(q) = alpha * arctanh(q * tanh(1 / alpha))."""
+    if alpha is None or alpha <= 0:
+        return q
+    scale = math.tanh(1.0 / alpha)
+    if isinstance(q, torch.Tensor):
+        arg = torch.clamp(q * scale, -1.0 + 1e-7, 1.0 - 1e-7)
+        return alpha * torch.atanh(arg)
+    if isinstance(q, np.ndarray):
+        arg = np.clip(q * scale, -1.0 + 1e-7, 1.0 - 1e-7)
+        return alpha * np.arctanh(arg)
+    arg = max(-1.0 + 1e-7, min(1.0 - 1e-7, float(q) * scale))
+    return alpha * math.atanh(arg)
+
+
+def _select(root: Node, c_puct: float, max_plies: int, root_visit_compensation: bool = False):
     """Walk from the root to an unexpanded (or terminal) node, returning the edge path."""
     node, path = root, []
     while True:
@@ -88,7 +115,10 @@ def _select(root: Node, c_puct: float, max_plies: int):
         # PUCT. Unvisited edges get Q=0, which in a [-1,1] value scale means "even" - the
         # standard AlphaZero choice and the reason first-play-urgency is not needed here.
         q = np.where(node.n > 0, node.w / np.maximum(node.n, 1), 0.0)
-        u = c_puct * node.p * math.sqrt(node.total + 1) / (1 + node.n)
+        scale = math.sqrt(node.total + 1)
+        if root_visit_compensation and node is root and node.total > 0:
+            scale = scale * math.sqrt(node.total / (node.total + 1.0))
+        u = c_puct * node.p * scale / (1 + node.n)
         i = int(np.argmax(q + u))
         kid = node.kids[i]
         if kid is None:
@@ -135,11 +165,14 @@ _C_VISIT = 50.0      # paper defaults; sigma only has to be monotone in q
 _C_SCALE = 1.0
 
 
-def _sigma(q, max_n: int):
-    return (_C_VISIT + max_n) * _C_SCALE * q
+def _sigma(q, max_n: int, total_n: int = 0, root_visit_compensation: bool = False):
+    scale = _C_SCALE
+    if root_visit_compensation and total_n > 0:
+        scale = scale * math.sqrt((total_n + 1.0) / (_C_VISIT + total_n)) * math.sqrt(_C_VISIT)
+    return (_C_VISIT + max_n) * scale * q
 
 
-def _completed_q(node: Node):
+def _completed_q(node: Node, tanh_value_transform: bool = False, root_visit_compensation: bool = False):
     """Q for every edge, with never-visited edges filled in by v_mix.
 
     v_mix interpolates between the network's own value for the node and the
@@ -157,14 +190,23 @@ def _completed_q(node: Node):
         s = float(ps.sum())
         if s > 1e-9:
             v_mix = (node.value + total * float((ps * q[seen]).sum()) / s) / (1.0 + total)
+    if root_visit_compensation:
+        # Grill et al.: regularise first visits toward v_mix
+        q[seen] = (n[seen] * q[seen] + v_mix) / (n[seen] + 1.0)
     q[~seen] = v_mix
+    if tanh_value_transform:
+        q = value_transform(q)
     return q
 
 
-def _improved_policy(node: Node):
+def _improved_policy(node: Node, tanh_value_transform: bool = False, root_visit_compensation: bool = False):
     """softmax(logits + sigma(completedQ)) over this node's legal actions."""
     z = np.log(np.maximum(node.p, 1e-9))
-    z = z + _sigma(_completed_q(node), int(node.n.max()) if node.n.size else 0)
+    q = _completed_q(node, tanh_value_transform=tanh_value_transform,
+                     root_visit_compensation=root_visit_compensation)
+    max_n = int(node.n.max()) if node.n.size else 0
+    total_n = int(node.total)
+    z = z + _sigma(q, max_n, total_n=total_n, root_visit_compensation=root_visit_compensation)
     z -= z.max()
     e = np.exp(z)
     return (e / e.sum()).astype(np.float32)
@@ -184,10 +226,12 @@ def _considered(k: int, budget: int, cap: int):
     return max(1, m)
 
 
-def _descend(node: Node, max_plies: int, path):
+def _descend(node: Node, max_plies: int, path, tanh_value_transform: bool = False,
+             root_visit_compensation: bool = False):
     """Walk below the root, keeping visit proportions on track with pi'."""
     while node.terminal is None and node.acts is not None:
-        pi = _improved_policy(node)
+        pi = _improved_policy(node, tanh_value_transform=tanh_value_transform,
+                              root_visit_compensation=root_visit_compensation)
         i = int(np.argmax(pi - node.n / (1.0 + node.total)))
         kid = node.kids[i]
         if kid is None:
@@ -202,9 +246,11 @@ def _descend(node: Node, max_plies: int, path):
 class _Sched:
     """Sequential Halving schedule for one root."""
 
-    __slots__ = ('cands', 'score', 'per', 'seen', 'budget', 'phases_left')
+    __slots__ = ('cands', 'score', 'per', 'seen', 'budget', 'phases_left',
+                 'tanh_value_transform', 'root_visit_compensation')
 
-    def __init__(self, node: Node, rng, budget: int, cap: int):
+    def __init__(self, node: Node, rng, budget: int, cap: int,
+                 tanh_value_transform: bool = False, root_visit_compensation: bool = False):
         k = len(node.acts)
         # Gumbel-Top-k: argtop(g + logits) is an exact sample of k distinct actions
         # drawn without replacement from softmax(logits).
@@ -213,6 +259,8 @@ class _Sched:
         self.cands = np.argsort(-self.score)[:m].copy()
         self.budget = max(budget, m)
         self.phases_left = max(1, math.ceil(math.log2(m))) if m > 1 else 1
+        self.tanh_value_transform = tanh_value_transform
+        self.root_visit_compensation = root_visit_compensation
         self._phase()
 
     def _phase(self):
@@ -226,8 +274,13 @@ class _Sched:
         self._phase()
 
     def _rank(self, node: Node):
-        return self.score[self.cands] + _sigma(_completed_q(node)[self.cands],
-                                               int(node.n.max()))
+        q = _completed_q(node, tanh_value_transform=self.tanh_value_transform,
+                         root_visit_compensation=self.root_visit_compensation)
+        max_n = int(node.n.max()) if node.n.size else 0
+        total_n = int(node.total)
+        return self.score[self.cands] + _sigma(
+            q[self.cands], max_n, total_n=total_n,
+            root_visit_compensation=self.root_visit_compensation)
 
     def next(self, node: Node):
         """Edge index to visit next, or None once the budget is spent."""
@@ -288,7 +341,8 @@ def _evaluate(net, nodes, device, encoding, canon):
         _expand(n, logits[i], values[i], canon)
 
 
-def _select_gumbel(g: _Game, max_plies: int):
+def _select_gumbel(g: _Game, max_plies: int, tanh_value_transform: bool = False,
+                   root_visit_compensation: bool = False):
     """One Sequential-Halving simulation: the root edge is scheduled, the rest is greedy."""
     root = g.root
     i = g.sched.next(root)
@@ -300,11 +354,13 @@ def _select_gumbel(g: _Game, max_plies: int):
         kid.terminal = _terminal_value(kid.s, max_plies)
         root.kids[i] = kid
     path = [(root, i)]
-    return _descend(kid, max_plies, path), path
+    return _descend(kid, max_plies, path, tanh_value_transform=tanh_value_transform,
+                    root_visit_compensation=root_visit_compensation), path
 
 
 def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=16,
-           c_puct=1.6, max_plies=220, seed=None, batched=False):
+           c_puct=1.6, max_plies=220, seed=None, batched=False,
+           tanh_value_transform=False, root_visit_compensation=False):
     """Search one position. Returns (actions, probabilities, root value).
 
     Self-play and the arena batch many games through each forward pass because they have
@@ -338,7 +394,9 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
 
     holder = SimpleNamespace(root=root, sched=None)
     if gumbel:
-        holder.sched = _Sched(root, np.random.default_rng(seed), sims, gumbel_cap)
+        holder.sched = _Sched(root, np.random.default_rng(seed), sims, gumbel_cap,
+                              tanh_value_transform=tanh_value_transform,
+                              root_visit_compensation=root_visit_compensation)
     else:
         rounds = sims
 
@@ -350,7 +408,9 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
             while True:
                 batch = []
                 for _ in range(len(holder.sched.cands)):
-                    leaf, path = _select_gumbel(holder, max_plies)
+                    leaf, path = _select_gumbel(holder, max_plies,
+                                                tanh_value_transform=tanh_value_transform,
+                                                root_visit_compensation=root_visit_compensation)
                     if leaf is None:              # budget exhausted
                         break
                     batch.append((leaf, path))
@@ -363,7 +423,9 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
                     _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
         else:
             for _ in range(holder.sched.budget):
-                leaf, path = _select_gumbel(holder, max_plies)
+                leaf, path = _select_gumbel(holder, max_plies,
+                                            tanh_value_transform=tanh_value_transform,
+                                            root_visit_compensation=root_visit_compensation)
                 if leaf is None:
                     break
                 if leaf.terminal is None:
@@ -371,26 +433,32 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
                 _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
     else:
         for _ in range(rounds):
-            leaf, path = _select(root, c_puct, max_plies)
+            leaf, path = _select(root, c_puct, max_plies,
+                                root_visit_compensation=root_visit_compensation)
             if leaf.terminal is None:
                 _evaluate(net, [leaf], device, encoding, canon)
             _backup(path, leaf.terminal if leaf.terminal is not None else leaf.value)
 
     if gumbel:
-        probs = _improved_policy(root).astype(np.float64)
+        probs = _improved_policy(root, tanh_value_transform=tanh_value_transform,
+                                 root_visit_compensation=root_visit_compensation).astype(np.float64)
     else:
         probs = root.n.astype(np.float64)
         if probs.sum() <= 0:              # every simulation hit a terminal edge
             probs = root.p.astype(np.float64)
     probs = probs / probs.sum()
-    return list(root.acts), probs.astype(np.float32), float(root.w.sum() / max(1, root.total))
+    root_val = float(root.w.sum() / max(1, root.total))
+    if tanh_value_transform:
+        root_val = float(value_transform(root_val))
+    return list(root.acts), probs.astype(np.float32), root_val
 
 
 def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_frac=0.25,
              c_puct=1.6, max_plies=220, temp_moves=20, temp=1.0, noise_frac=0.25,
              alpha_scale=10.0, resign_v=-0.95, resign_streak=4, resign_skip=0.1,
              seed=0, progress=None, gumbel=False, gumbel_cap=16,
-             concurrent_games=None, game_offset=0, total_games=None):
+             concurrent_games=None, game_offset=0, total_games=None,
+             tanh_value_transform=False, root_visit_compensation=False):
     """Play `games` games with MCTS and return (samples, stats).
 
     Each sample is (encoded_state, pi, z, q): pi is the improved root policy in the
@@ -435,7 +503,9 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
         if gumbel:
             # Visits carried over by tree reuse stay in the tree and sharpen Q, but the
             # halving schedule is drawn fresh - these are new Gumbel candidates.
-            g.sched = _Sched(node, g.rng, budget, gumbel_cap)
+            g.sched = _Sched(node, g.rng, budget, gumbel_cap,
+                             tanh_value_transform=tanh_value_transform,
+                             root_visit_compensation=root_visit_compensation)
             g.sims_left = g.sched.budget
         else:
             g.sims_left = max(1, budget - int(node.total))
@@ -456,12 +526,15 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
                     continue
                 g.sims_left -= 1
                 if gumbel:
-                    leaf, path = _select_gumbel(g, max_plies)
+                    leaf, path = _select_gumbel(g, max_plies,
+                                                tanh_value_transform=tanh_value_transform,
+                                                root_visit_compensation=root_visit_compensation)
                     if leaf is None:            # halving schedule exhausted early
                         g.sims_left = 0
                         continue
                 else:
-                    leaf, path = _select(g.root, c_puct, max_plies)
+                    leaf, path = _select(g.root, c_puct, max_plies,
+                                        root_visit_compensation=root_visit_compensation)
                 if leaf.terminal is not None:
                     _backup(path, leaf.terminal)
                 else:
@@ -481,9 +554,12 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
                 done.append(g)
                 continue
             q_root = float(root.w.sum() / max(1, root.total))
+            if tanh_value_transform:
+                q_root = float(value_transform(q_root))
 
             if gumbel:
-                target = _improved_policy(root)
+                target = _improved_policy(root, tanh_value_transform=tanh_value_transform,
+                                          root_visit_compensation=root_visit_compensation)
                 i = g.sched.winner(root)
             else:
                 visits = root.n.astype(np.float64)

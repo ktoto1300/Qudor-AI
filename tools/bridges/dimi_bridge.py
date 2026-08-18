@@ -10,15 +10,21 @@ slot, j odd/even col]; v walls (i, j, i+2, j, i+1, j). Slot mapping matches ours
 (h slot (r,c) blocks columns c..c+1, v slot blocks rows r..r+1).
 """
 import json
-import os
 import sys
+from pathlib import Path
 
-BOTS = os.environ.get('BOTS_DIR', r'C:\Users\kamil\Desktop\bots')
-ROOT = os.path.join(BOTS, 'dimitrijekaranfilovic_quoridor')
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from quoridor_ai.paths import bots_dir, repo_root      # noqa: E402
+
+ROOT = bots_dir() / 'dimitrijekaranfilovic_quoridor'
 if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+    sys.path.insert(0, str(ROOT))
 
-sys.path.insert(0, os.environ.get('QUDOR_REPO', r'C:\Users\kamil\Desktop\Qudor'))
+_REPO_PY = repo_root()
+if str(_REPO_PY) not in sys.path:
+    sys.path.insert(0, str(_REPO_PY))
 from quoridor_ai.core.engine import State as OurState, legal_actions as our_legal  # noqa: E402
 
 import numpy as np                                                     # noqa: E402

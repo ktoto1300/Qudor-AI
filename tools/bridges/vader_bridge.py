@@ -10,11 +10,15 @@ Their MCTS always searches the canonical board (white to move); the returned act
 in canonical space; pawn directions are converted to our pawn-destination ints.
 """
 import json
-import os
 import sys
 from pathlib import Path
 
-BOTS = Path(os.environ.get('BOTS_DIR', r'C:\Users\kamil\Desktop\bots'))
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from quoridor_ai.paths import bots_dir                # noqa: E402
+
+BOTS = bots_dir()
 ROOT = BOTS / 'v-ade-r_QuoridorAI-AlphaZero'
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'pytorch_utils'))      # keep AFTER ROOT: pytorch_utils has

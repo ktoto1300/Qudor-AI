@@ -3,12 +3,14 @@ import pytest
 import torch
 
 from quoridor_ai.az_selfplay import (Node, _completed_q, _considered, _evaluate,
-                                     _improved_policy, search, selfplay)
+                                     _improved_policy, inv_value_transform,
+                                     search, selfplay, value_transform)
 from quoridor_ai.core.encoding import PLANES_BY_VERSION
 from quoridor_ai.core.engine import State
 from quoridor_ai.model import PolicyValueNet
 
 
+@pytest.mark.integration
 def test_selfplay_reports_actual_terminal_ply_not_last_recorded_sample():
     """Full-search samples are intentionally sparse; game length must not inherit that sparsity."""
     net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3])
@@ -32,6 +34,7 @@ def test_search_reports_a_won_position_as_a_loss_for_the_mover():
     assert value == -1.0, "the mover faces an already-lost board, not a draw"
 
 
+@pytest.mark.integration
 def test_batched_gumbel_is_deterministic_and_compatible():
     """The batched Gumbel variant is a speed option, not an equivalent clone of the
     per-visit loop (its leaf selections inside a round see the previous round's backups
@@ -105,6 +108,7 @@ def test_improved_policy_covers_every_legal_action():
     assert int(np.argmax(pi)) == 0, "the edge search liked must lead"
 
 
+@pytest.mark.integration
 def test_gumbel_learns_a_dense_target_from_a_tiny_budget():
     """Gumbel's headline claim: usable targets at budgets where visit counts are noise."""
     net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3])
@@ -123,6 +127,7 @@ def test_gumbel_learns_a_dense_target_from_a_tiny_budget():
         f"gumbel {support(gum):.1f} vs visit counts {support(plain):.1f} actions per target")
 
 
+@pytest.mark.integration
 def test_gumbel_target_stays_inside_the_legal_action_set():
     """Mass outside the legal canonical actions would teach the net illegal moves."""
     net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3])
@@ -133,6 +138,7 @@ def test_gumbel_target_stays_inside_the_legal_action_set():
     assert set(np.nonzero(pi)[0].tolist()) <= legal
 
 
+@pytest.mark.integration
 @pytest.mark.parametrize('gumbel', [False, True])
 def test_rolling_game_pool_preserves_each_games_search(gumbel):
     """Pool size may change inference batching, never an individual tree's search."""
@@ -157,6 +163,7 @@ def test_selfplay_rejects_invalid_pool_sizes():
         selfplay(net, torch.device('cpu'), games=2, concurrent_games=0)
 
 
+@pytest.mark.integration
 def test_game_shards_preserve_the_full_runs_rng_streams():
     net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
     kwargs = dict(encoding=3, sims=4, fast_sims=2, full_frac=0.5, max_plies=8,
@@ -173,3 +180,106 @@ def test_game_shards_preserve_the_full_runs_rng_streams():
         assert np.array_equal(expected[0], actual[0])
         assert np.allclose(expected[1], actual[1])
         assert expected[2:] == pytest.approx(actual[2:], abs=1e-8)
+
+
+def test_value_transform_and_inv_value_transform():
+    """value_transform must be strictly monotonic, invert cleanly, and preserve [-1, 1] bounds."""
+    vals = np.linspace(-1.0, 1.0, 50, dtype=np.float32)
+    t_vals = value_transform(vals, alpha=1.0)
+    assert np.all(np.diff(t_vals) > 0), "value_transform must be strictly monotonic"
+    assert value_transform(1.0) == pytest.approx(1.0)
+    assert value_transform(-1.0) == pytest.approx(-1.0)
+    assert value_transform(0.0) == pytest.approx(0.0)
+    assert (-1.0 <= t_vals).all() and (t_vals <= 1.0).all()
+
+    inv_vals = inv_value_transform(t_vals, alpha=1.0)
+    assert np.allclose(vals, inv_vals, atol=1e-6)
+
+    # PyTorch Tensor support
+    t_tensor = value_transform(torch.tensor([-1.0, 0.0, 0.5, 1.0]), alpha=1.0)
+    assert torch.allclose(t_tensor, torch.tensor([-1.0, 0.0, value_transform(0.5), 1.0]))
+    inv_tensor = inv_value_transform(t_tensor, alpha=1.0)
+    assert torch.allclose(inv_tensor, torch.tensor([-1.0, 0.0, 0.5, 1.0]), atol=1e-6)
+
+
+@pytest.mark.integration
+def test_search_and_selfplay_default_settings_match_explicit_false():
+    """Default parameters must produce bit-identical output to explicit legacy defaults."""
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    s = State()
+    dev = torch.device('cpu')
+
+    a1, p1, v1 = search(net, s, dev, encoding=3, sims=8, gumbel=True, seed=42)
+    a2, p2, v2 = search(net, s, dev, encoding=3, sims=8, gumbel=True, seed=42,
+                        tanh_value_transform=False, root_visit_compensation=False)
+    assert a1 == a2 and v1 == v2
+    assert np.array_equal(p1, p2)
+
+    d1, s1 = selfplay(net, dev, games=2, encoding=3, sims=4, fast_sims=2,
+                      full_frac=0.5, max_plies=8, seed=42, gumbel=True)
+    d2, s2 = selfplay(net, dev, games=2, encoding=3, sims=4, fast_sims=2,
+                      full_frac=0.5, max_plies=8, seed=42, gumbel=True,
+                      tanh_value_transform=False, root_visit_compensation=False)
+    assert s1 == s2
+    assert len(d1) == len(d2)
+    for sample1, sample2 in zip(d1, d2, strict=True):
+        assert np.array_equal(sample1[0], sample2[0])
+        assert np.array_equal(sample1[1], sample2[1])
+        assert sample1[2:] == sample2[2:]
+
+
+@pytest.mark.integration
+def test_tanh_value_transform_search_and_selfplay():
+    """Enabling tanh_value_transform preserves valid probabilities and bounded values in [-1, 1]."""
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    s = State()
+    dev = torch.device('cpu')
+
+    acts, probs, val = search(net, s, dev, encoding=3, sims=12, gumbel=True, seed=99,
+                              tanh_value_transform=True)
+    assert -1.0 <= val <= 1.0
+    assert float(probs.sum()) == pytest.approx(1.0, abs=1e-5)
+    assert (probs >= 0.0).all()
+    assert len(acts) == len(probs)
+
+    data, stats = selfplay(net, dev, games=2, encoding=3, sims=4, fast_sims=2,
+                           full_frac=1.0, max_plies=8, seed=99, gumbel=True,
+                           tanh_value_transform=True)
+    assert stats['games'] == 2 and data
+    for _, pi, z, q in data:
+        assert float(pi.sum()) == pytest.approx(1.0, abs=1e-5)
+        assert -1.0 <= z <= 1.0 and -1.0 <= q <= 1.0
+
+
+@pytest.mark.integration
+def test_root_visit_compensation_search_and_selfplay():
+    """Root visit compensation in Gumbel and PUCT modes behaves stably and deterministically."""
+    net = PolicyValueNet(8, 1, PLANES_BY_VERSION[3]).eval()
+    s = State()
+    dev = torch.device('cpu')
+
+    # Gumbel search
+    a1, p1, v1 = search(net, s, dev, encoding=3, sims=12, gumbel=True, seed=105,
+                        root_visit_compensation=True)
+    a2, p2, v2 = search(net, s, dev, encoding=3, sims=12, gumbel=True, seed=105,
+                        root_visit_compensation=True)
+    assert a1 == a2 and v1 == v2
+    assert np.array_equal(p1, p2)
+    assert float(p1.sum()) == pytest.approx(1.0, abs=1e-5)
+    assert -1.0 <= v1 <= 1.0
+
+    # PUCT search
+    pa1, pp1, pv1 = search(net, s, dev, encoding=3, sims=12, gumbel=False, seed=105,
+                           root_visit_compensation=True)
+    assert pa1 and float(pp1.sum()) == pytest.approx(1.0, abs=1e-5)
+    assert -1.0 <= pv1 <= 1.0
+
+    # Selfplay
+    data, stats = selfplay(net, dev, games=2, encoding=3, sims=4, fast_sims=2,
+                           full_frac=0.5, max_plies=8, seed=105, gumbel=True,
+                           root_visit_compensation=True)
+    assert stats['games'] == 2 and data
+    for _, pi, z, q in data:
+        assert float(pi.sum()) == pytest.approx(1.0, abs=1e-5)
+        assert -1.0 <= z <= 1.0 and -1.0 <= q <= 1.0
+

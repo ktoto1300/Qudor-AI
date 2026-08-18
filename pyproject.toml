@@ -8,7 +8,7 @@ requires-python=">=3.10"
 # pandas/matplotlib/psutil were listed but never imported anywhere in the tree.
 dependencies=["numpy>=1.26","torch>=2.2"]
 [project.optional-dependencies]
-dev=["pytest>=8"]
+dev=["pytest>=8","ruff>=0.1"]
 [project.scripts]
 qudor-legacy-train="quoridor_ai.train:main"
 qudor-legacy-arena="quoridor_ai.arena:main"
@@ -18,7 +18,12 @@ qudor-train="quoridor_ai.az_train:main"
 qudor-az-train="quoridor_ai.az_train:main"
 qudor-az-arena="quoridor_ai.az_arena:main"
 qudor-baseline="quoridor_ai.baseline:main"
+qudor-eval-baseline="quoridor_ai.baseline:main"
 [tool.setuptools.packages.find]
 include=["quoridor_ai*"]
 [tool.pytest.ini_options]
 testpaths=["tests"]
+markers=[
+    "integration: mark test as integration test (web server, training loops, MCTS/minimax search matches, external processes)",
+    "slow: mark test as slow running test",
+]

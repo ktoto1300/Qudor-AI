@@ -1,63 +1,66 @@
-"""The replay buffer is the trainer's largest object; on disk it must behave the same."""
+"""DiskReplay ring-buffer semantics and buffer-geometry guards."""
 import numpy as np
 import pytest
 
 from quoridor_ai.replay import DiskReplay
 
+PLANES, ACTIONS, CAP = 11, 209, 8
 
-def _sample(i, planes=16, actions=209):
-    x = np.full((planes, 9, 9), float(i), np.float32)
-    pi = np.zeros(actions, np.float32)
-    pi[i % actions] = 1.0
-    return x, pi, float(i % 3) - 1.0, float(i) / 100.0
+X = np.random.rand(CAP, PLANES, 9, 9).astype(np.float32)
+PI = np.random.rand(CAP, ACTIONS).astype(np.float32)
+Z = np.random.rand(CAP).astype(np.float32)
+Q = np.random.rand(CAP).astype(np.float32)
 
 
-def test_disk_replay_reads_back_what_it_stored(tmp_path):
-    replay = DiskReplay(tmp_path / 'replay', capacity=8, planes=4, actions=6)
-    replay.extend([_sample(i, 4, 6) for i in range(3)])
-    assert len(replay) == 3
+def _samples(n):
+    return [(X[i % CAP], PI[i % CAP], float(Z[i % CAP]), float(Q[i % CAP]))
+            for i in range(n)]
+
+
+def test_append_then_read_keeps_insertion_order(tmp_path):
+    r = DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
+    r.extend(_samples(3))
+    assert len(r) == 3
     for i in range(3):
-        x, pi, z, q = replay[i]
-        assert np.array_equal(x, np.full((4, 9, 9), float(i), np.float32))
-        assert int(pi.argmax()) == i % 6
-        assert z == pytest.approx(float(i % 3) - 1.0)
-        assert q == pytest.approx(float(i) / 100.0)
+        x, pi, z, q = r[i]
+        assert np.array_equal(x, X[i]) and np.array_equal(pi, PI[i])
+        assert z == float(Z[i]) and q == float(Q[i])
 
 
-def test_disk_replay_drops_the_oldest_samples_like_a_deque(tmp_path):
-    replay = DiskReplay(tmp_path / 'replay', capacity=4, planes=4, actions=6)
-    replay.extend([_sample(i, 4, 6) for i in range(6)])
-    assert len(replay) == 4
-    # Sample 0 and 1 were overwritten; index 0 is now the oldest survivor.
-    assert replay[0][0][0, 0, 0] == pytest.approx(2.0)
-    assert replay[3][0][0, 0, 0] == pytest.approx(5.0)
+def test_ring_overwrites_the_oldest_when_full(tmp_path):
+    r = DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
+    r.extend(_samples(CAP + 5))
+    assert len(r) == CAP
+    assert np.array_equal(r[0][0], X[5])          # index 0 is the oldest survivor
 
 
-def test_disk_replay_tail_returns_the_most_recent_samples(tmp_path):
-    replay = DiskReplay(tmp_path / 'replay', capacity=8, planes=4, actions=6)
-    replay.extend([_sample(i, 4, 6) for i in range(5)])
-    tail = replay.tail(2)
-    assert [row[0][0, 0, 0] for row in tail] == [3.0, 4.0]
-    assert replay.tail(99)[0][0][0, 0, 0] == pytest.approx(0.0)
+def test_reattach_restores_size_and_head(tmp_path):
+    r = DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
+    r.extend(_samples(5))
+    r2 = DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
+    assert len(r2) == 5
+    for i in range(5):
+        assert np.array_equal(r2[i][0], X[i]) and np.array_equal(r2[i][1], PI[i])
 
 
-def test_disk_replay_reattaches_after_a_restart(tmp_path):
-    first = DiskReplay(tmp_path / 'replay', capacity=8, planes=4, actions=6)
-    first.extend([_sample(i, 4, 6) for i in range(5)])
-    second = DiskReplay(tmp_path / 'replay', capacity=8, planes=4, actions=6)
-    assert len(second) == 5
-    assert second[4][0][0, 0, 0] == pytest.approx(4.0)
+def test_geometry_mismatch_in_a_matching_file_is_refused(tmp_path):
+    tag = f'x_{CAP}x{PLANES}x{ACTIONS}.npy'
+    np.lib.format.open_memmap(tmp_path / tag, mode='w+', dtype=np.float32,
+                              shape=(CAP, 5, 9, 9)).flush()
+    with pytest.raises(ValueError, match='replay buffer'):
+        DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
 
 
-def test_disk_replay_ignores_a_buffer_with_different_geometry(tmp_path):
-    first = DiskReplay(tmp_path / 'replay', capacity=8, planes=4, actions=6)
-    first.extend([_sample(i, 4, 6) for i in range(5)])
-    reshaped = DiskReplay(tmp_path / 'replay', capacity=8, planes=16, actions=6)
-    assert len(reshaped) == 0
+def test_garbage_in_a_buffer_file_is_refused(tmp_path):
+    tag = f'x_{CAP}x{PLANES}x{ACTIONS}.npy'
+    (tmp_path / tag).write_bytes(b'not a numpy file at all')
+    with pytest.raises(ValueError, match='unreadable replay buffer'):
+        DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
 
 
-def test_disk_replay_rejects_out_of_range_indices(tmp_path):
-    replay = DiskReplay(tmp_path / 'replay', capacity=4, planes=4, actions=6)
-    replay.extend([_sample(0, 4, 6)])
-    with pytest.raises(IndexError):
-        replay[1]
+def test_extend_rejects_wrong_sample_shapes(tmp_path):
+    r = DiskReplay(tmp_path, CAP, PLANES, ACTIONS)
+    with pytest.raises(ValueError, match='sample state'):
+        r.extend([(np.zeros((5, 9, 9), np.float32), PI[0], 0.0, 0.0)])
+    with pytest.raises(ValueError, match='sample policy'):
+        r.extend([(X[0], np.zeros(100, np.float32), 0.0, 0.0)])

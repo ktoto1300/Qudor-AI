@@ -9,16 +9,22 @@ venv/
 
 # Local/editor/runtime artifacts.
 *.log
+*.err
+*.pid
+*.tmp
 *.zip
 cloud_server_watch.json
 viewer*.log
 .model_index.json
+*.jsonl
 
-# Private cloud operations and local experiment outputs.
+# Private cloud operations and transient experiment outputs / bridge traces.
 ops/
 local_cpu_az/
 smoke_run/
 legacy/
+bridge_logs/
+**/bridge_logs/
 
 # Checkpoints and run artifacts: large binaries, kept on disk but out of git.
 *.pt

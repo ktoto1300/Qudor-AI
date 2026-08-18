@@ -1,0 +1,22 @@
+{
+  "games": 2,
+  "wins": 2,
+  "draws": 0,
+  "losses": 0,
+  "opp_forfeits": 0,
+  "win_rate": 1.0,
+  "elo_delta": 1600.0,
+  "win_rate_as_p0": 1.0,
+  "win_rate_as_p1": 1.0,
+  "avg_plies": 42.5,
+  "sims": 16,
+  "temperature": 0.6,
+  "gumbel": true,
+  "seed": 1,
+  "opponent": "marcobt15",
+  "net": "checkpoints/gen13_best.pt",
+  "generation": 13,
+  "iteration": 439,
+  "device": "cpu",
+  "net_name": "gen13_best.pt"
+}

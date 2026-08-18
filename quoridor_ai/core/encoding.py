@@ -9,20 +9,26 @@ existing checkpoint keeps working. It has three known flaws:
 
 v2 (8 planes) drops the three dead planes and normalises ply by the real cap.
 
-v3 (16 planes) is the layout for serious training. On top of v2 it adds the features
-a Quoridor net otherwise has to derive from raw walls over many layers:
+v3 (16 planes) is the canonical layout for standard training (including gen69 and
+gen85 checkpoints). On top of v2 it adds the features a Quoridor net otherwise has to
+derive from raw walls over many layers:
   * per-side BFS distance-to-goal fields and the pawn's own distance,
   * the distance difference (who is winning the race),
   * an explicit "wall slot is occupied" plane,
   * side-to-move relative framing so the net always sees "me" vs "opponent".
 Everything is normalised to roughly [0,1] and the whole board is flipped when player 1
 is to move, so one set of filters serves both sides.
+
+v4 (18 planes) is the experimental architecture for future training campaigns.
+It includes all 16 planes from v3 canonical plus 2 BFS pawn-to-cell distance fields:
+  * plane 16: BFS distance field from current player to all cells, canonical.
+  * plane 17: BFS distance field from opponent to all cells, canonical.
 """
 import numpy as np
-from .engine import State, rc, dist_field, _UNREACH
+from .engine import State, rc, dist_field, pawn_dist_field, _UNREACH
 
 MAX_PLIES = 220
-PLANES_BY_VERSION = {1: 11, 2: 8, 3: 16}
+PLANES_BY_VERSION = {1: 11, 2: 8, 3: 16, 4: 18}
 DEFAULT_VERSION = 1
 PLANES = PLANES_BY_VERSION[DEFAULT_VERSION]  # kept for callers that import PLANES directly
 BEST_VERSION = 3  # what new training runs should use
@@ -118,6 +124,46 @@ def encode_v3(s: State):
     return x
 
 
+def encode_v4(s: State):
+    """18 planes: all 16 planes from v3 canonical plus 2 BFS pawn distance fields.
+
+    Plane 16: BFS distance field from current player to all cells, canonical.
+    Plane 17: BFS distance field from opponent to all cells, canonical.
+    """
+    me_is_1 = s.player == 1
+    mine, theirs = (s.p1, s.p0) if me_is_1 else (s.p0, s.p1)
+    my_walls, their_walls = (s.walls1, s.walls0) if me_is_1 else (s.walls0, s.walls1)
+
+    # --- spatial planes, still in real board coordinates ---
+    sp = np.zeros((9, 9, 9), np.float32)
+    r, c = rc(mine); sp[0, r, c] = 1
+    r, c = rc(theirs); sp[1, r, c] = 1
+    _slot_blocks(s.h, sp[2])
+    _slot_blocks(s.v, sp[3])
+    _slot_blocks(s.h | s.v, sp[4])
+    sp[5] = _dist_plane(dist_field(s, 8 if me_is_1 else 0))   # my distance-to-goal field
+    sp[6] = _dist_plane(dist_field(s, 0 if me_is_1 else 8))   # theirs
+    sp[7] = _dist_plane(pawn_dist_field(s, mine))              # my BFS pawn distance field
+    sp[8] = _dist_plane(pawn_dist_field(s, theirs))            # opponent BFS pawn distance field
+    my_d = float(sp[5].reshape(-1)[mine])
+    their_d = float(sp[6].reshape(-1)[theirs])
+    if me_is_1:
+        sp = sp[:, ::-1, :]        # into canonical frame: my goal becomes row 0
+
+    x = np.zeros((18, 9, 9), np.float32)
+    x[:7] = sp[:7]
+    x[7].fill(my_walls / 10); x[8].fill(their_walls / 10)
+    x[9].fill(my_d); x[10].fill(their_d)
+    x[11].fill(np.clip(0.5 + (their_d - my_d) * 2.0, 0.0, 1.0))   # who wins the race
+    x[12].fill(min(1.0, s.ply / MAX_PLIES))
+    x[13].fill(1.0)                # bias plane: lets convs feel the board edge
+    x[14, 0] = 1                   # my goal row, canonical
+    x[15].fill(1.0 if my_walls else 0.0)
+    x[16] = sp[7]                  # my BFS distance field
+    x[17] = sp[8]                  # opponent BFS distance field
+    return x
+
+
 def _build_mirror():
     """Action permutation matching v3's vertical board flip: cell (r,c) -> (8-r,c).
 
@@ -175,7 +221,7 @@ def is_canonical(version: int) -> bool:
     return version >= 3
 
 
-_ENCODERS = {1: encode_v1, 2: encode_v2, 3: encode_v3}
+_ENCODERS = {1: encode_v1, 2: encode_v2, 3: encode_v3, 4: encode_v4}
 
 
 def encode(s: State, version: int = DEFAULT_VERSION):

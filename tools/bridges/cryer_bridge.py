@@ -18,7 +18,12 @@ import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
-REPO = Path(os.environ.get('BOTS_DIR', r'C:\Users\kamil\Desktop\bots')) / 'cryer_AlphaZero_Quoridor'
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+from quoridor_ai.paths import bots_dir                # noqa: E402
+
+REPO = bots_dir() / 'cryer_AlphaZero_Quoridor'
 sys.path.insert(0, str(REPO))
 
 from quoridor import Quoridor

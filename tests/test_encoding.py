@@ -12,17 +12,18 @@ import pytest
 
 from quoridor_ai.core.encoding import (
     FLIPLR, MAX_PLIES, MIRROR, PLANES, PLANES_BY_VERSION, encode, encode_batch,
-    encode_v1, encode_v2, encode_v3, is_canonical, version_for_planes,
+    encode_v1, encode_v2, encode_v3, encode_v4, is_canonical, version_for_planes,
 )
 from quoridor_ai.core.engine import State, apply_unchecked, bit, legal_actions, rc
 
 
 def test_plane_counts():
-    assert PLANES_BY_VERSION == {1: 11, 2: 8, 3: 16}
+    assert PLANES_BY_VERSION == {1: 11, 2: 8, 3: 16, 4: 18}
     assert PLANES == 11
     assert encode_v1(State()).shape == (11, 9, 9)
     assert encode_v2(State()).shape == (8, 9, 9)
     assert encode_v3(State()).shape == (16, 9, 9)
+    assert encode_v4(State()).shape == (18, 9, 9)
 
 
 def test_v1_golden_start_position():
@@ -161,7 +162,7 @@ def test_permutations_are_involutions_and_commute():
     assert (MIRROR[MIRROR] == np.arange(209)).all()
     assert (FLIPLR[FLIPLR] == np.arange(209)).all()
     assert (MIRROR[FLIPLR] == FLIPLR[MIRROR]).all()
-    assert is_canonical(3) and not is_canonical(1) and not is_canonical(2)
+    assert is_canonical(4) and is_canonical(3) and not is_canonical(1) and not is_canonical(2)
 
 
 def test_v3_is_identical_under_role_swap():
@@ -208,3 +209,65 @@ def test_v3_frames_the_goal_at_row_zero_for_both_players():
     # From the start position both sides are the same distance from goal, so the race
     # margin sits exactly at the neutral 0.5.
     assert encode_v3(State())[11, 0, 0] == pytest.approx(0.5)
+
+
+# --- v4 BFS distance planes --------------------------------------------------------
+
+def test_v4_golden_start_position():
+    s = State()
+    x = encode_v4(s)
+    assert x.dtype == np.float32
+    assert x.shape == (18, 9, 9)
+    # First 16 planes must strictly match v3
+    assert np.array_equal(x[:16], encode_v3(s))
+    # Plane 16: my pawn distance field. In start position for player 0, p0 is at (8, 4).
+    assert x[16, 8, 4] == pytest.approx(0.0)
+    # Opponent is at (0, 4), Manhattan dist = 8 -> 8 / 24.0 = 1/3
+    assert x[16, 0, 4] == pytest.approx(8.0 / 24.0)
+    # Plane 17: opponent pawn distance field. Opponent p1 is at (0, 4).
+    assert x[17, 0, 4] == pytest.approx(0.0)
+    assert x[17, 8, 4] == pytest.approx(8.0 / 24.0)
+    # Check player 1 perspective at start
+    s1 = State(player=1)
+    x1 = encode_v4(s1)
+    assert np.array_equal(x1[:16], encode_v3(s1))
+    # In canonical frame for player 1, my pawn (p1, row 0) is at canonical row 8
+    assert x1[16, 8, 4] == pytest.approx(0.0)
+    assert x1[17, 0, 4] == pytest.approx(0.0)
+
+
+def test_v4_contains_v3_prefix():
+    for s in _random_positions(seed=16, games=8):
+        v3 = encode_v3(s)
+        v4 = encode_v4(s)
+        assert np.array_equal(v4[:16], v3)
+
+
+def test_v4_is_identical_under_role_swap():
+    n = 0
+    for s in _random_positions(seed=17):
+        n += 1
+        assert np.array_equal(encode_v4(s), encode_v4(_swapped(s)))
+    assert n > 200
+
+
+def test_v4_mirrored_move_leads_to_the_mirrored_position():
+    rng = random.Random(18)
+    for s in _random_positions(seed=18):
+        a = rng.choice(legal_actions(s))
+        assert np.array_equal(encode_v4(apply_unchecked(s, a)),
+                              encode_v4(apply_unchecked(_swapped(s), int(MIRROR[a]))))
+
+
+def test_v4_left_right_flip_matches_the_column_reversed_tensor():
+    for s in _random_positions(seed=19):
+        assert np.array_equal(encode_v4(_flipped_lr(s)), encode_v4(s)[:, :, ::-1])
+        assert sorted(int(FLIPLR[a]) for a in legal_actions(s)) == sorted(legal_actions(_flipped_lr(s)))
+
+
+def test_v4_planes_are_normalised():
+    for s in _random_positions(seed=20, games=8):
+        x = encode_v4(s)
+        assert x.dtype == np.float32
+        assert x.min() >= 0.0 and x.max() <= 1.0
+
