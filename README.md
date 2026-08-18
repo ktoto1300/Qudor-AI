@@ -10,7 +10,7 @@ Qudor includes a custom bitboard engine, versioned state encoding, policy/value 
 
 - 209-action Quoridor move space: 81 pawn moves, 64 horizontal walls, 64 vertical walls.
 - Custom legality and path-preservation checks for wall placement.
-- Three state encodings; v3 is the current encoding for new training.
+- Four state encodings; v3 is used by published checkpoints and v4 is experimental for future training.
 - PUCT and Gumbel-Top-k / sequential-halving search paths.
 - Candidate promotion through MCTS-vs-MCTS arena gating, with the EMA copy competing in the same race.
 - Atomic checkpoint saves and restricted checkpoint loading (PyTorch `weights_only`).
@@ -28,7 +28,7 @@ For standard installation with development tools:
 python -m pip install -e ".[dev]"
 ```
 
-For exact byte-for-byte reproducibility using pinned dependencies (see [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json)):
+For a pinned local development environment (see [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json)):
 
 ```bash
 python -m pip install -r requirements-lock.txt
@@ -170,10 +170,10 @@ How the project changed along the way:
   but the engine still allowed adjacent same-orientation walls to overlap. Its outputs must
   not be presented as official-rules checkpoints.
 
-### Current campaign: `official_rules_v2_batched`
+### Recorded campaign: `official_rules_v2_batched`
 
-The active lineage under `RULES_VERSION=2`, started 14 August 11:08 UTC on the GPU
-server, initialised via `--init` from `runs/official_fixed_batched/latest.pt`
+The recorded lineage under `RULES_VERSION=2`, started 14 August 11:08 UTC on the GPU
+server, was initialised via `--init` from `runs/official_fixed_batched/latest.pt`
 (i.e. with a fresh replay buffer, optimiser, LR schedule, metrics and generation
 lineage).
 
@@ -246,9 +246,10 @@ representations, searches and authors, so they catch a systematic blind spot rat
 regression. `tools/foreign_arena.py` plays them over a JSON-lines protocol through
 dedicated bridge processes in `tools/bridges/`; the repository and bot directory paths are
 set via the `QUDOR_REPO` and `BOTS_DIR` environment variables, and simulation budgets for
-heavy engines are tuned per bridge. The results in `results/` are the full overnight runs
-described below; earlier 2-game smoke runs at 16 simulations are statistically
-insignificant and kept for reference only.
+heavy engines are tuned per bridge. The repository contains smoke results and selected
+summaries. Full overnight match records were produced on the server but their raw JSON
+files are not published here; earlier 2-game smoke runs at 16 simulations are
+statistically insignificant and kept for reference only.
 
 #### gen69 champion (17 August 2026, 570 games)
 
@@ -319,14 +320,10 @@ For a meaningful comparison, report the configuration, checkpoint, encoding vers
 
 ## Deployment on the GPU server
 
-A dedicated server instance (RTX 3060 Ti 8 GB, 8 cores, 7.9 GB RAM) runs the
-`official_rules_v2_batched` campaign. Deployment and monitoring scripts live in
-`ops/cloud/` and are excluded from publication:
-
-- `deploy_cloud.ps1` uploads sources and configurations (no checkpoints);
-- `cloud_setup.sh` builds a venv with torch 2.5.1+cu121;
-- `cloud_train.sh` starts a campaign;
-- `watch_training_logs.ps1` and `sync_cloud_checkpoints.ps1` monitor the run and fetch checkpoints.
+A dedicated server instance (RTX 3060 Ti 8 GB, 8 cores, 7.9 GB RAM) ran the
+`official_rules_v2_batched` campaign. Deployment and monitoring scripts are machine-specific
+and intentionally kept outside this public repository. The server environment is documented
+in [`requirements-server-cuda.txt`](requirements-server-cuda.txt) and [`MANIFEST.md`](MANIFEST.md).
 
 ## Repository layout
 
@@ -341,7 +338,6 @@ tools/             Wall diagnostics and the arena against external engines via b
 results/           Summaries of evals and smoke runs
 notebooks/         Experiment notebooks
 legacy/            Historical experiments, excluded from the public package by default
-ops/cloud/         Server/deploy/watch scripts, excluded from the public release
 ```
 
 Checkpoint files (`*.pt`, `*.pth`, `*.ckpt`), logs, `runs/`, local experiments and
@@ -356,14 +352,14 @@ stored via Git LFS. Dependencies and environments are pinned in [`requirements-l
 - Training results depend on the search configuration, the number of games, the random seed and the statistical power of the arena test.
 - The legacy `gen13_*` checkpoints were trained before the wall-overlap correction and do not follow the official rules; the `gen69_*` checkpoints are the first published official-rules models (`RULES_VERSION=2`).
 - The results against external engines come from open-source hobby/student engines and are not a basis for claims against commercial engines or human masters.
-- The `ops/cloud/` scripts contain machine-specific infrastructure defaults and are local-only.
+- Server deployment uses machine-specific infrastructure outside this public repository.
 
 ## Development priorities & Roadmap
 
 ### Completed Milestones
 1. [x] **Lockfile & Reproducibility Manifest:** Pinned local CPU development in [`requirements-lock.txt`](requirements-lock.txt) and GPU server training in [`requirements-server-cuda.txt`](requirements-server-cuda.txt); documented in [`MANIFEST.md`](MANIFEST.md) and [`reproducibility.json`](reproducibility.json).
 2. [x] **Fast / Integration Test Suite Splitting:** Configured `pyproject.toml` markers separating fast unit tests (`python -m pytest -m "not integration"`) from full integration suites (`python -m pytest`).
-3. [x] **Experiment Artifacts & Metrics Manifest:** Tracked runs via manifests and structured summaries in `results/`, `cloud_server_watch.json`, and [`MODEL_CARD.md`](MODEL_CARD.md).
+3. [x] **Experiment Artifacts & Metrics Manifest:** Tracked published runs via manifests and structured summaries in `results/` and [`MODEL_CARD.md`](MODEL_CARD.md).
 4. [x] **Baseline Evaluation CLI:** Implemented `qudor-eval-baseline` (`quoridor_ai/baseline.py`) with Wilson score confidence intervals and Elo deltas against `rusher` and `greedy`.
 5. [x] **Model Card Publication:** Published [`MODEL_CARD.md`](MODEL_CARD.md) detailing architecture parameters, training methodology, SHA-256 hashes, and baseline benchmarks for `gen69_best.pt`.
 6. [x] **Multi-Engine Tournament Coordinator:** Implemented `tools/foreign_arena.py` with multi-process bridge adapters (`tools/bridges/`) testing against 6+ external Quoridor engines.

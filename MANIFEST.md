@@ -37,7 +37,7 @@ This document records the exact runtime environments, dependency pinning, and ve
 ## 2. Locked Dependencies
 
 - **Local CPU Development**: Locked in [`requirements-lock.txt`](requirements-lock.txt) and machine-readable in [`reproducibility.json`](reproducibility.json).
-- **GPU Server Training**: Locked in [`requirements-server-cuda.txt`](requirements-server-cuda.txt) and automated in [`ops/cloud/cloud_setup.sh`](ops/cloud/cloud_setup.sh).
+- **GPU Server Training**: Specified in [`requirements-server-cuda.txt`](requirements-server-cuda.txt). Machine-specific deployment scripts are kept outside the public repository.
 
 ### Local CPU Runtime & Development
 - `numpy==2.4.6`

@@ -1,11 +1,11 @@
 {
   "metadata": {
     "schema_version": "1.0.0",
-    "generated_at": "2026-08-18 20:28:18 UTC",
+    "generated_at": "2026-08-18 20:58:18 UTC",
     "results_dir": "C:\\Users\\kamil\\Desktop\\Qudor\\results",
-    "total_scanned_files": 13,
+    "total_scanned_files": 11,
     "counts": {
-      "tournaments": 1,
+      "tournaments": 0,
       "foreign_arena": 6,
       "baseline_evaluations": 2,
       "evaluation_summaries": 1,
@@ -14,120 +14,11 @@
     }
   },
   "git": {
-    "commit": "3e51b8eb704ba6c95833d704906c9e57ccdc55bc",
+    "commit": "73acb0004fbb01d43aaa6298a1ede46dcc9d4c17",
     "branch": "master",
     "is_dirty": true
   },
-  "tournaments": [
-    {
-      "file": "tournaments/tournament_20260818_190314.json",
-      "tournament_id": "tournament_20260818_190314",
-      "name": "Qudor Round-Robin Tournament (2 Engines)",
-      "format": "round-robin",
-      "num_participants": 2,
-      "total_games": 2,
-      "winner": "greedy",
-      "standings": [
-        {
-          "name": "greedy",
-          "type": "baseline",
-          "matches": 1,
-          "games": 2,
-          "points": 2.0,
-          "points_pct": 100.0,
-          "wins": 2,
-          "draws": 0,
-          "losses": 0,
-          "decisive_games": 2,
-          "decisive_pct": 100.0,
-          "forfeits_conceded": 0,
-          "forfeits_received": 0,
-          "avg_plies": 34.5,
-          "rating": 1631.38,
-          "rating_se": 296.74,
-          "rating_ci_95": [
-            1049.79,
-            2212.98
-          ],
-          "sonneborn_berger": 0.0,
-          "buchholz": 0.0,
-          "rank": 1
-        },
-        {
-          "name": "rusher",
-          "type": "baseline",
-          "matches": 1,
-          "games": 2,
-          "points": 0.0,
-          "points_pct": 0.0,
-          "wins": 0,
-          "draws": 0,
-          "losses": 2,
-          "decisive_games": 2,
-          "decisive_pct": 100.0,
-          "forfeits_conceded": 0,
-          "forfeits_received": 0,
-          "avg_plies": 34.5,
-          "rating": 1368.62,
-          "rating_se": 296.74,
-          "rating_ci_95": [
-            787.02,
-            1950.21
-          ],
-          "sonneborn_berger": 0.0,
-          "buchholz": 2.0,
-          "rank": 2
-        }
-      ],
-      "cross_table": {
-        "participants": [
-          "greedy",
-          "rusher"
-        ],
-        "rows": [
-          {
-            "name": "greedy",
-            "scores": {
-              "greedy": {
-                "self": true,
-                "text": "-"
-              },
-              "rusher": {
-                "self": false,
-                "score": 2.0,
-                "opp_score": 0.0,
-                "wins": 2,
-                "draws": 0,
-                "losses": 0,
-                "text": "2-0"
-              }
-            }
-          },
-          {
-            "name": "rusher",
-            "scores": {
-              "greedy": {
-                "self": false,
-                "score": 0.0,
-                "opp_score": 2.0,
-                "wins": 0,
-                "draws": 0,
-                "losses": 2,
-                "text": "0-2"
-              },
-              "rusher": {
-                "self": true,
-                "text": "-"
-              }
-            }
-          }
-        ]
-      },
-      "matchups_count": 1,
-      "sha256": "5ad183ed1958ecf363d5bf03678b32ed84a3e1dead20f6f4c43cac137516df0e",
-      "mtime": "2026-08-18 19:03:19 UTC"
-    }
-  ],
+  "tournaments": [],
   "foreign_arena": [
     {
       "file": "foreign_dimi_smoke.json",

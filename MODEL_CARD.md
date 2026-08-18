@@ -20,7 +20,7 @@ The table below catalogs all official and published checkpoints residing in [`ch
 > [!NOTE]
 > **Published Checkpoints vs. Server Evaluation Runs (`gen69` vs. `gen85`):**
 > - **Official Published Checkpoints:** The repository tracks and distributes `gen69_best.pt` and `gen69_latest.pt` under `RULES_VERSION = 2` in [`checkpoints/`](checkpoints/), alongside legacy `gen13_*` models.
-> - **Active Server Evaluation Runs (`gen85`):** References to `gen85` in tournament records and benchmark summaries designate active server evaluation runs under `official_rules_v2_batched` rather than static checkpoint binaries published in the `checkpoints/` directory.
+> - **Historical Server Evaluation Runs (`gen85`):** References to `gen85` in tournament records and benchmark summaries designate server evaluation runs under `official_rules_v2_batched` rather than static checkpoint binaries published in the `checkpoints/` directory.
 
 | Checkpoint File | Lineage / Description | Generation | Iteration | Input Planes | Size (Bytes) | SHA-256 Hash | Rules Version |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- | :---: |
@@ -28,8 +28,6 @@ The table below catalogs all official and published checkpoints residing in [`ch
 | [`checkpoints/gen69_latest.pt`](checkpoints/gen69_latest.pt) | Official Rules v2 Full Training State | 69 | 1429 | 16 (v3) | 236,389,946 | `a4c569d8172c9f12824961ac3d474fe34a5dbf2ff403dc34976d992f99fb6d8c` | `2` |
 | [`checkpoints/gen13_best.pt`](checkpoints/gen13_best.pt) | Legacy Colab Best (pre-v2 geometry) | 13 | 439 | 16 (v3) | 13,024,927 | `377355c77f8c5c5d1dc3dd31c3e0358e67d98cffe669754de61319ee30924c49` | Legacy |
 | [`checkpoints/gen13_latest.pt`](checkpoints/gen13_latest.pt) | Legacy Colab Latest (pre-v2 geometry) | 13 | 444 | 16 (v3) | 235,507,723 | `f2e09decb0797ac3d7b120fe0b5106a5dc7e0fad4618fefe01a03762beed1823` | Legacy |
-| [`checkpoints/best.pt.int8.pt`](checkpoints/best.pt.int8.pt) | Quantized INT8 Weights (Fast CPU Inference) | 12 | 239 | 16 (v3) | 3,445,215 | `d417de6d45f3121df456ca596f1788ed78076128d9103e3acc31fe46caf9fb96` | Legacy |
-| [`checkpoints/gen13_best.pt.int8.pt`](checkpoints/gen13_best.pt.int8.pt) | Quantized INT8 Weights (Gen 13) | 13 | 439 | 16 (v3) | 3,447,687 | `290b09e0766410e84cc7c0686f4b3c1b62ba60129371bff06ba6522475e25608` | Legacy |
 
 ---
 
@@ -107,12 +105,13 @@ The model's strength is measured against deterministic, non-learning reference b
 - **`rusher`**: Shortest-path BFS racer. Never places walls. Tests fundamental board navigation and race tactical awareness.
 - **`greedy`**: 1-ply BFS search evaluating pawn steps and wall placements with race-differential scoring ($1.5 \cdot \Delta d_{\text{opp}} - \Delta d_{\text{self}} + 0.25 \cdot \Delta w$).
 
-### Evaluation Results (100 Games, Alternating P0/P1, 64 Sims)
+### Published Evaluation Results
 
-| Baseline Bot | Checkpoint | Win Rate (95% CI) | Elo Delta (95% CI) | P0 Win Rate | P1 Win Rate | Avg Game Length |
-| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **`rusher`** | `gen69_best.pt` | **97.0%** `[93.6%, 100.0%]` | **+603.9** `[+467.2, +1600.0]` | 94.0% | 100.0% | 18.8 plies |
-| **`greedy`** | `gen69_best.pt` | **19.0%** `[11.3%, 26.7%]` | **-251.9** `[-357.7, -175.4]` | 14.0% | 24.0% | 61.6 plies |
+The published baseline JSON files evaluate the legacy server checkpoint
+`runs/rtx3060_24h/best.pt` (generation 12, iteration 239), not `gen69_best.pt`.
+They are retained as historical reference data and must not be presented as gen69
+benchmarks. A reproducible gen69 baseline run should be added before publishing gen69
+strength claims.
 
 ---
 
