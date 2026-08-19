@@ -36,7 +36,8 @@ import numpy as np
 import torch
 
 from .az_arena import compare
-from .az_selfplay import selfplay, value_transform
+from .az_selfplay import selfplay, validate_gumbel_value_mixture, value_transform
+from .opening_bank import load_opening_bank
 from .baseline import BOTS, play as play_baseline
 from .core.encoding import FLIPLR, PLANES_BY_VERSION, BEST_VERSION
 from .core.engine import ACTION_SIZE, RULES_VERSION
@@ -191,6 +192,10 @@ def run(config, output, resume=True, init=None, device=None):
     enc = int(c.get('encoding', BEST_VERSION))
     if enc not in PLANES_BY_VERSION:
         raise ValueError(f'config encoding={enc} unknown; known: {sorted(PLANES_BY_VERSION)}')
+    gumbel_value_mixture = validate_gumbel_value_mixture(c.get('gumbel_value_mixture', 'adapted'))
+    opening_bank = None
+    if c.get('opening_bank'):
+        opening_bank = load_opening_bank(c['opening_bank'], rules_version=RULES_VERSION)
 
     device = resolve_device(device or c.get('device'))
     if device.type == 'cuda':
@@ -273,7 +278,8 @@ def run(config, output, resume=True, init=None, device=None):
         # the log, not in a guess two hundred iterations later.
         was = d.get('config', {})
         for k in ('gumbel', 'gumbel_cap', 'sims', 'fast_sims', 'full_frac', 'total_steps',
-                  'tanh_value_transform', 'root_visit_compensation'):
+                   'tanh_value_transform', 'root_visit_compensation', 'gumbel_value_mixture',
+                   'policy_target_ema', 'opening_bank'):
             if k in was and was[k] != c.get(k):
                 print(f'  WARNING: {k} was {was[k]!r} in the checkpoint, now {c.get(k)!r}',
                       flush=True)
@@ -327,8 +333,12 @@ def run(config, output, resume=True, init=None, device=None):
             full_frac=float(c.get('full_frac', 0.25)), c_puct=float(c.get('c_puct', 1.6)),
             max_plies=int(c['max_plies']), temp_moves=int(c.get('temp_moves', 20)),
             noise_frac=float(c.get('noise_frac', 0.25)), resign_v=float(c.get('resign_v', -0.95)),
-            gumbel=bool(c.get('gumbel', False)), gumbel_cap=int(c.get('gumbel_cap', 16)),
-            tanh_value_transform=tanh_val, root_visit_compensation=root_comp,
+             gumbel=bool(c.get('gumbel', False)), gumbel_cap=int(c.get('gumbel_cap', 16)),
+             tanh_value_transform=tanh_val, root_visit_compensation=root_comp,
+             gumbel_value_mixture=gumbel_value_mixture,
+             policy_target_ema=float(c.get('policy_target_ema', 0.0)), opening_bank=opening_bank,
+             opening_mirror=bool(c.get('opening_mirror', False)),
+             resign_log=bool(c.get('resign_log', False)),
             seed=seed * 1000 + it,
             concurrent_games=int(c.get('concurrent_games', c['games'])),
             _weights_dir=str(out))
@@ -396,8 +406,9 @@ def run(config, output, resume=True, init=None, device=None):
             results = [(name, compare(cand, best, device, gate_games, gate_sims,
                                       temp=float(c.get('gate_temp', 0.6)),
                                       max_plies=int(c['max_plies']), seed=seed + it,
-                                      gumbel=bool(c.get('gate_gumbel', c.get('gumbel', False))),
-                                      gumbel_cap=int(c.get('gumbel_cap', 16))))
+                                       gumbel=bool(c.get('gate_gumbel', c.get('gumbel', False))),
+                                       gumbel_cap=int(c.get('gumbel_cap', 16)),
+                                       gumbel_value_mixture=gumbel_value_mixture))
                        for name, cand in trials]
             name, r = max(results, key=lambda kv: kv[1]['win_rate'])
             wr, elo = r['win_rate'], r['elo_delta']

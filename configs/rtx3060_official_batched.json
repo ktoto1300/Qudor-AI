@@ -24,6 +24,7 @@
   "weight_decay": 0.0001,
   "value_blend_q": 0.4,
   "ema_decay": 0.999,
+  "gumbel_value_mixture": "adapted",
   "replay": 500000,
   "replay_on_disk": true,
   "checkpoint_replay": 25000,

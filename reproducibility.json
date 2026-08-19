@@ -2,7 +2,7 @@
   "manifest_version": "1.0.0",
   "project": {
     "name": "qudor-ai",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "description": "AlphaZero-style AI for 9x9 Quoridor with bitboard engine, MCTS/Gumbel search, and web viewer"
   },
   "environments": {

@@ -27,6 +27,18 @@ import torch
 
 from .core.encoding import MIRROR, encode_batch, is_canonical
 from .core.engine import State, ACTION_SIZE, apply_unchecked, legal_actions
+from .opening_bank import select_opening
+
+
+GUMBEL_VALUE_MIXTURES = frozenset(("adapted", "canonical"))
+
+
+def validate_gumbel_value_mixture(mode):
+    if mode not in GUMBEL_VALUE_MIXTURES:
+        raise ValueError(
+            f"gumbel_value_mixture must be one of {sorted(GUMBEL_VALUE_MIXTURES)}, got {mode!r}"
+        )
+    return mode
 
 
 class Node:
@@ -172,13 +184,15 @@ def _sigma(q, max_n: int, total_n: int = 0, root_visit_compensation: bool = Fals
     return (_C_VISIT + max_n) * scale * q
 
 
-def _completed_q(node: Node, tanh_value_transform: bool = False, root_visit_compensation: bool = False):
+def _completed_q(node: Node, tanh_value_transform: bool = False,
+                 root_visit_compensation: bool = False, value_mixture="adapted"):
     """Q for every edge, with never-visited edges filled in by v_mix.
 
     v_mix interpolates between the network's own value for the node and the
     prior-weighted average Q over the edges search did visit, with the weight
     shifting toward search as visits accumulate.
     """
+    validate_gumbel_value_mixture(value_mixture)
     n, w, p = node.n, node.w, node.p
     seen = n > 0
     q = np.zeros(len(n), np.float32)
@@ -186,10 +200,16 @@ def _completed_q(node: Node, tanh_value_transform: bool = False, root_visit_comp
     total = int(node.total)
     v_mix = node.value
     if total > 0:
-        ps = p[seen]
-        s = float(ps.sum())
-        if s > 1e-9:
-            v_mix = (node.value + total * float((ps * q[seen]).sum()) / s) / (1.0 + total)
+        if value_mixture == "adapted":
+            ps = p[seen]
+            s = float(ps.sum())
+            if s > 1e-9:
+                mean_q = float((ps * q[seen]).sum()) / s
+            else:
+                mean_q = node.value
+        else:
+            mean_q = float((n[seen] * q[seen]).sum()) / total
+        v_mix = (node.value + total * mean_q) / (1.0 + total)
     if root_visit_compensation:
         # Grill et al.: regularise first visits toward v_mix
         q[seen] = (n[seen] * q[seen] + v_mix) / (n[seen] + 1.0)
@@ -199,11 +219,13 @@ def _completed_q(node: Node, tanh_value_transform: bool = False, root_visit_comp
     return q
 
 
-def _improved_policy(node: Node, tanh_value_transform: bool = False, root_visit_compensation: bool = False):
+def _improved_policy(node: Node, tanh_value_transform: bool = False,
+                     root_visit_compensation: bool = False, value_mixture="adapted"):
     """softmax(logits + sigma(completedQ)) over this node's legal actions."""
     z = np.log(np.maximum(node.p, 1e-9))
     q = _completed_q(node, tanh_value_transform=tanh_value_transform,
-                     root_visit_compensation=root_visit_compensation)
+                     root_visit_compensation=root_visit_compensation,
+                     value_mixture=value_mixture)
     max_n = int(node.n.max()) if node.n.size else 0
     total_n = int(node.total)
     z = z + _sigma(q, max_n, total_n=total_n, root_visit_compensation=root_visit_compensation)
@@ -227,11 +249,12 @@ def _considered(k: int, budget: int, cap: int):
 
 
 def _descend(node: Node, max_plies: int, path, tanh_value_transform: bool = False,
-             root_visit_compensation: bool = False):
+             root_visit_compensation: bool = False, value_mixture="adapted"):
     """Walk below the root, keeping visit proportions on track with pi'."""
     while node.terminal is None and node.acts is not None:
         pi = _improved_policy(node, tanh_value_transform=tanh_value_transform,
-                              root_visit_compensation=root_visit_compensation)
+                              root_visit_compensation=root_visit_compensation,
+                              value_mixture=value_mixture)
         i = int(np.argmax(pi - node.n / (1.0 + node.total)))
         kid = node.kids[i]
         if kid is None:
@@ -247,10 +270,11 @@ class _Sched:
     """Sequential Halving schedule for one root."""
 
     __slots__ = ('cands', 'score', 'per', 'seen', 'budget', 'phases_left',
-                 'tanh_value_transform', 'root_visit_compensation')
+                  'tanh_value_transform', 'root_visit_compensation', 'value_mixture')
 
     def __init__(self, node: Node, rng, budget: int, cap: int,
-                 tanh_value_transform: bool = False, root_visit_compensation: bool = False):
+                  tanh_value_transform: bool = False, root_visit_compensation: bool = False,
+                  value_mixture="adapted"):
         k = len(node.acts)
         # Gumbel-Top-k: argtop(g + logits) is an exact sample of k distinct actions
         # drawn without replacement from softmax(logits).
@@ -261,6 +285,7 @@ class _Sched:
         self.phases_left = max(1, math.ceil(math.log2(m))) if m > 1 else 1
         self.tanh_value_transform = tanh_value_transform
         self.root_visit_compensation = root_visit_compensation
+        self.value_mixture = validate_gumbel_value_mixture(value_mixture)
         self._phase()
 
     def _phase(self):
@@ -275,7 +300,8 @@ class _Sched:
 
     def _rank(self, node: Node):
         q = _completed_q(node, tanh_value_transform=self.tanh_value_transform,
-                         root_visit_compensation=self.root_visit_compensation)
+                         root_visit_compensation=self.root_visit_compensation,
+                         value_mixture=self.value_mixture)
         max_n = int(node.n.max()) if node.n.size else 0
         total_n = int(node.total)
         return self.score[self.cands] + _sigma(
@@ -317,6 +343,8 @@ class _Game:
         self.full = False
         self.sched = None        # Sequential Halving state, Gumbel mode only
         self.final_ply = 0       # actual game length; recorded samples are only a subset of moves
+        self.policy_target_ema = None
+        self.resign_event = None
 
 
 def _root_noise(node: Node, rng, frac: float, alpha_scale: float):
@@ -342,7 +370,7 @@ def _evaluate(net, nodes, device, encoding, canon):
 
 
 def _select_gumbel(g: _Game, max_plies: int, tanh_value_transform: bool = False,
-                   root_visit_compensation: bool = False):
+                    root_visit_compensation: bool = False, value_mixture="adapted"):
     """One Sequential-Halving simulation: the root edge is scheduled, the rest is greedy."""
     root = g.root
     i = g.sched.next(root)
@@ -355,12 +383,14 @@ def _select_gumbel(g: _Game, max_plies: int, tanh_value_transform: bool = False,
         root.kids[i] = kid
     path = [(root, i)]
     return _descend(kid, max_plies, path, tanh_value_transform=tanh_value_transform,
-                    root_visit_compensation=root_visit_compensation), path
+                    root_visit_compensation=root_visit_compensation,
+                    value_mixture=value_mixture), path
 
 
 def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=16,
            c_puct=1.6, max_plies=220, seed=None, batched=False,
-           tanh_value_transform=False, root_visit_compensation=False):
+           tanh_value_transform=False, root_visit_compensation=False,
+           gumbel_value_mixture="adapted"):
     """Search one position. Returns (actions, probabilities, root value).
 
     Self-play and the arena batch many games through each forward pass because they have
@@ -384,6 +414,7 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
     opt in.
     """
     root = Node(s)
+    validate_gumbel_value_mixture(gumbel_value_mixture)
     canon = is_canonical(encoding)
     _evaluate(net, [root], device, encoding, canon)
     if not root.acts:
@@ -396,7 +427,8 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
     if gumbel:
         holder.sched = _Sched(root, np.random.default_rng(seed), sims, gumbel_cap,
                               tanh_value_transform=tanh_value_transform,
-                              root_visit_compensation=root_visit_compensation)
+                              root_visit_compensation=root_visit_compensation,
+                              value_mixture=gumbel_value_mixture)
     else:
         rounds = sims
 
@@ -410,7 +442,8 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
                 for _ in range(len(holder.sched.cands)):
                     leaf, path = _select_gumbel(holder, max_plies,
                                                 tanh_value_transform=tanh_value_transform,
-                                                root_visit_compensation=root_visit_compensation)
+                                                root_visit_compensation=root_visit_compensation,
+                                                value_mixture=gumbel_value_mixture)
                     if leaf is None:              # budget exhausted
                         break
                     batch.append((leaf, path))
@@ -425,7 +458,8 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
             for _ in range(holder.sched.budget):
                 leaf, path = _select_gumbel(holder, max_plies,
                                             tanh_value_transform=tanh_value_transform,
-                                            root_visit_compensation=root_visit_compensation)
+                                            root_visit_compensation=root_visit_compensation,
+                                            value_mixture=gumbel_value_mixture)
                 if leaf is None:
                     break
                 if leaf.terminal is None:
@@ -441,7 +475,8 @@ def search(net, s: State, device, encoding=3, sims=64, gumbel=True, gumbel_cap=1
 
     if gumbel:
         probs = _improved_policy(root, tanh_value_transform=tanh_value_transform,
-                                 root_visit_compensation=root_visit_compensation).astype(np.float64)
+                                 root_visit_compensation=root_visit_compensation,
+                                 value_mixture=gumbel_value_mixture).astype(np.float64)
     else:
         probs = root.n.astype(np.float64)
         if probs.sum() <= 0:              # every simulation hit a terminal edge
@@ -458,7 +493,9 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
              alpha_scale=10.0, resign_v=-0.95, resign_streak=4, resign_skip=0.1,
              seed=0, progress=None, gumbel=False, gumbel_cap=16,
              concurrent_games=None, game_offset=0, total_games=None,
-             tanh_value_transform=False, root_visit_compensation=False):
+             tanh_value_transform=False, root_visit_compensation=False,
+             gumbel_value_mixture="adapted", policy_target_ema=0.0,
+             opening_bank=None, opening_mirror=False, resign_log=False):
     """Play `games` games with MCTS and return (samples, stats).
 
     Each sample is (encoded_state, pi, z, q): pi is the improved root policy in the
@@ -472,6 +509,9 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
     """
     if games < 0:
         raise ValueError('games must be non-negative')
+    validate_gumbel_value_mixture(gumbel_value_mixture)
+    if not 0.0 <= policy_target_ema < 1.0:
+        raise ValueError('policy_target_ema must be in [0, 1)')
     total_games = games if total_games is None else int(total_games)
     if game_offset < 0 or total_games < game_offset + games:
         raise ValueError('game range must fit inside total_games')
@@ -486,8 +526,14 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
 
     def _new_game(i):
         logical_id = game_offset + i
-        return _Game(np.random.default_rng(seed * 7919 + logical_id),
-                     bool(resign_flags[logical_id]))
+        game_seed = seed * 7919 + logical_id
+        game = _Game(np.random.default_rng(game_seed), bool(resign_flags[logical_id]))
+        if opening_bank:
+            line = select_opening(opening_bank, game_seed,
+                                  mirror=opening_mirror and bool(game_seed & 1))
+            for action in line:
+                game.root = Node(apply_unchecked(game.root.s, action))
+        return game
 
     live = [_new_game(i) for i in range(concurrent_games)]
     next_game = concurrent_games
@@ -505,7 +551,8 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
             # halving schedule is drawn fresh - these are new Gumbel candidates.
             g.sched = _Sched(node, g.rng, budget, gumbel_cap,
                              tanh_value_transform=tanh_value_transform,
-                             root_visit_compensation=root_visit_compensation)
+                             root_visit_compensation=root_visit_compensation,
+                             value_mixture=gumbel_value_mixture)
             g.sims_left = g.sched.budget
         else:
             g.sims_left = max(1, budget - int(node.total))
@@ -528,7 +575,8 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
                 if gumbel:
                     leaf, path = _select_gumbel(g, max_plies,
                                                 tanh_value_transform=tanh_value_transform,
-                                                root_visit_compensation=root_visit_compensation)
+                                                root_visit_compensation=root_visit_compensation,
+                                                value_mixture=gumbel_value_mixture)
                     if leaf is None:            # halving schedule exhausted early
                         g.sims_left = 0
                         continue
@@ -559,7 +607,8 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
 
             if gumbel:
                 target = _improved_policy(root, tanh_value_transform=tanh_value_transform,
-                                          root_visit_compensation=root_visit_compensation)
+                                          root_visit_compensation=root_visit_compensation,
+                                          value_mixture=gumbel_value_mixture)
                 i = g.sched.winner(root)
             else:
                 visits = root.n.astype(np.float64)
@@ -573,6 +622,17 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
                     i = int(g.rng.choice(len(probs), p=probs))
                 else:
                     i = int(np.argmax(visits))
+
+            if policy_target_ema > 0 and root.s.ply < temp_moves:
+                previous = (None if g.policy_target_ema is None
+                            else g.policy_target_ema[root.cacts])
+                if previous is not None and previous.sum() > 0:
+                    previous = previous / previous.sum()
+                    target = ((1.0 - policy_target_ema) * target
+                              + policy_target_ema * previous).astype(np.float32)
+                    target /= target.sum()
+                g.policy_target_ema = np.zeros(ACTION_SIZE, np.float32)
+                g.policy_target_ema[root.cacts] = target
 
             if g.full:
                 pi = np.zeros(ACTION_SIZE, np.float32)
@@ -588,6 +648,9 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
             if g.bad_streak >= resign_streak:
                 g.result = -1.0 if root.s.player == 0 else 1.0
                 g.final_ply = root.s.ply
+                if resign_log:
+                    g.resign_event = {'reason': 'value_below_threshold', 'q': q_root,
+                                      'streak': g.bad_streak, 'ply': root.s.ply}
                 done.append(g)
                 continue
 
@@ -633,5 +696,7 @@ def selfplay(net, device, games=64, encoding=3, sims=200, fast_sims=50, full_fra
     stats = {'games': len(done), 'samples': len(out),
              'avg_plies': float(np.mean(lengths)) if lengths else 0.0,
              'p0_wins': sum(1 for g in done if g.result > 0),
-             'draws': sum(1 for g in done if g.result == 0)}
+              'draws': sum(1 for g in done if g.result == 0)}
+    if resign_log:
+        stats['resignations'] = [g.resign_event for g in done if g.resign_event is not None]
     return out, stats

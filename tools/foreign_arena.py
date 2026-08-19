@@ -33,10 +33,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
+import platform
+import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 # Running as a script rather than through the package, so the repo has to be importable
@@ -70,6 +75,23 @@ OPPONENTS = {
     'giorgos': [sys.executable, str(BRIDGES / 'giorgos_bridge.py')],
 }
 
+BOT_REPOS = {
+    'vader': 'v-ade-r_QuoridorAI-AlphaZero',
+    'berlioz': 'berlioz10_quoridor-monte-carlo',
+    'marcobt15': 'marcobt15_Quoridor_Reinforcement_Learning',
+    'cryer': 'cryer_AlphaZero_Quoridor',
+    'dimi': 'dimitrijekaranfilovic_quoridor',
+    'gorisanson': 'gorisanson_quoridor-ai',
+    'sigma': 'bartolomeo3000_SigmaQuoridor',
+    'pavlosdais': 'pavlosdais_Quoridor',
+    'giorgos': 'giorgosnikolaou_Quoridor-Engine',
+}
+TECHNICAL_OUTCOMES = (
+    'honest_game', 'explicit_forfeit', 'illegal_move', 'timeout', 'bridge_error')
+EXTERNAL_ASSET_NOTICE = (
+    'External bot folders and weights are not stored in Qudor and cannot be restored '
+    'automatically; clone or recover them separately and set BOTS_DIR if needed.')
+
 # Sentinel for "this bot is not playing on": a crash, an illegal move, or its own
 # surrender. A unique object rather than a magic int, because every int in this module
 # is a legal action index somewhere.
@@ -94,6 +116,158 @@ def _slots(mask: int):
 
 class BridgeError(RuntimeError):
     """The bridge subprocess cannot be talked to. Always a forfeit, never a crash."""
+
+
+class BridgeTimeout(BridgeError):
+    """The bridge failed to answer before its protocol deadline."""
+
+
+class ForfeitReason:
+    __slots__ = ('message', 'outcome', 'retryable')
+
+    def __init__(self, outcome: str, message: str, retryable: bool = False):
+        self.outcome = outcome
+        self.message = message
+        self.retryable = retryable
+
+    def __str__(self):
+        return self.message
+
+    def __contains__(self, text):
+        return text in self.message
+
+
+def _requirement(kind: str, value, ok: bool, detail: str = '') -> dict:
+    return {'kind': kind, 'value': str(value), 'ok': bool(ok), 'detail': detail}
+
+
+def _total_ram_bytes() -> int | None:
+    """Physical RAM without adding a runtime dependency such as psutil."""
+    if os.name == 'nt':
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('memory_load', ctypes.c_ulong),
+                        ('total_phys', ctypes.c_ulonglong),
+                        ('avail_phys', ctypes.c_ulonglong),
+                        ('total_page_file', ctypes.c_ulonglong),
+                        ('avail_page_file', ctypes.c_ulonglong),
+                        ('total_virtual', ctypes.c_ulonglong),
+                        ('avail_virtual', ctypes.c_ulonglong),
+                        ('avail_extended_virtual', ctypes.c_ulonglong)]
+
+        status = MemoryStatus()
+        status.length = ctypes.sizeof(status)
+        try:
+            return status.total_phys if ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(status)) else None
+        except (AttributeError, OSError):
+            return None
+    try:
+        return os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _build_tool_requirement(binary_exists: bool, label: str, commands: tuple[str, ...]) -> dict:
+    found = None
+    for command in commands:
+        found = shutil.which(command)
+        if found:
+            break
+    ok = binary_exists or bool(found)
+    if found:
+        detail = f'available for an external build ({Path(found).resolve()})'
+    elif binary_exists:
+        detail = 'not required because the platform-compatible engine binary exists'
+    else:
+        detail = f'{" or ".join(commands)} was not found on PATH; build externally'
+    return _requirement('build_tool', found or label, ok, detail)
+
+
+def preflight(opponents, min_ram_gb: float = 0) -> dict:
+    """Check bridge dependencies without importing or starting foreign engines."""
+    selected = list(opponents)
+    unknown = set(selected) - set(OPPONENTS)
+    if unknown:
+        raise ValueError(f'unknown opponents: {sorted(unknown)}; known: {sorted(OPPONENTS)}')
+    bots = Path(os.environ.get('BOTS_DIR', REPO.parent / 'bots')).resolve()
+    total_ram = _total_ram_bytes()
+    host_requirements = []
+    if min_ram_gb:
+        actual = total_ram / 1024 ** 3 if total_ram is not None else None
+        host_requirements.append(_requirement(
+            'ram', f'{min_ram_gb:g} GiB minimum',
+            actual is not None and actual >= min_ram_gb,
+            ('physical RAM could not be detected' if actual is None
+             else f'{actual:.1f} GiB physical RAM detected')))
+    statuses = []
+    for name in selected:
+        command = list(OPPONENTS[name])
+        script = Path(command[-1])
+        requirements = [_requirement('bridge_script', script, script.is_file())]
+        runtime = command[0]
+        resolved_runtime = (str(Path(runtime).resolve()) if Path(runtime).is_file()
+                            else shutil.which(runtime))
+        requirements.append(_requirement(
+            'runtime', resolved_runtime or runtime, bool(resolved_runtime),
+            f'{runtime} was not found on PATH' if not resolved_runtime else ''))
+        if resolved_runtime:
+            command[0] = resolved_runtime
+
+        repo = bots / BOT_REPOS[name]
+        requirements.append(_requirement('external_repo', repo, repo.is_dir()))
+        if name == 'vader':
+            weight = repo / 'temp' / 'best.pth.tar'
+            requirements.append(_requirement('weights', weight, weight.is_file()))
+        elif name == 'marcobt15':
+            weight = repo / os.environ.get(
+                'MARCOBT15_MODEL', 'quoridor_aec_v6_runs_and_walls.zip')
+            requirements.append(_requirement('weights', weight, weight.is_file()))
+        elif name == 'sigma':
+            weight = repo / 'runs' / 'models_9x9_heads' / 'best.pt'
+            requirements.append(_requirement('weights', weight, weight.is_file()))
+        elif name in ('pavlosdais', 'giorgos'):
+            base = repo / 'bin' / 'ipquoridor' if name == 'pavlosdais' else repo / 'main'
+            candidates = ([Path(f'{base}.exe')] if os.name == 'nt' else [base])
+            binary = next((path for path in candidates if path.is_file()), None)
+            platform_name = 'Windows PE (.exe)' if os.name == 'nt' else platform.system()
+            requirements.append(_requirement(
+                'binary', binary or candidates[0], binary is not None,
+                (f'{platform_name} binary required; preflight never builds foreign engines'
+                 if binary is None else f'platform-compatible {platform_name} binary')))
+            make_commands = ('mingw32-make', 'make') if os.name == 'nt' else ('make',)
+            requirements.append(_build_tool_requirement(
+                binary is not None, ' or '.join(make_commands), make_commands))
+            requirements.append(_build_tool_requirement(
+                binary is not None, 'gcc or clang', ('gcc', 'clang')))
+        missing = [req for req in requirements if not req['ok']]
+        statuses.append({'opponent': name, 'command': command, 'ok': not missing,
+                         'requirements': requirements, 'missing': missing})
+    return {'ok': (all(req['ok'] for req in host_requirements)
+                   and all(item['ok'] for item in statuses)),
+            'host_requirements': host_requirements, 'opponents': statuses,
+            'external_assets': EXTERNAL_ASSET_NOTICE}
+
+
+def smoke(opponent: str, logdir=None, seed: int = 0) -> dict:
+    """Handshake, request one legal opening move, and close a dependency-ready bridge."""
+    report = preflight([opponent])
+    if not report['ok']:
+        return {'opponent': opponent, 'ok': False, 'ran': False,
+                'error': 'dependencies failed', 'preflight': report}
+    logdir = Path(logdir) if logdir else REPO / 'runs' / 'foreign_logs'
+    bridge = Bridge(OPPONENTS[opponent], logdir / f'{opponent}_smoke.log')
+    try:
+        bridge.start(seed)
+        action, note = bridge.move(State())
+        if action is FORFEIT:
+            raise BridgeError(f'bridge forfeited opening move: {note}')
+        if action not in legal_actions(State()):
+            raise BridgeError(f'bridge returned illegal opening action {action}')
+        return {'opponent': opponent, 'ok': True, 'ran': True, 'action': action}
+    except BridgeError as exc:
+        return {'opponent': opponent, 'ok': False, 'ran': True, 'error': str(exc)}
+    finally:
+        bridge.close()
 
 
 class Bridge:
@@ -213,7 +387,7 @@ class Bridge:
         thread.join(timeout)
         if thread.is_alive():
             self._kill()
-            raise BridgeError(f'bridge {self.name} did not answer within {timeout:.0f}s')
+            raise BridgeTimeout(f'bridge {self.name} did not answer within {timeout:.0f}s')
         if 'error' in result:
             raise BridgeError(f'bridge {self.name} read failed: {result["error"]}')
         return result.get('line')
@@ -276,12 +450,15 @@ class ForeignBot:
         """(action, note) or (FORFEIT, reason) when the bridge gave up or erred."""
         try:
             a, illegal = self.bridge.move(s)
+        except BridgeTimeout as e:
+            return FORFEIT, ForfeitReason('timeout', str(e))
         except BridgeError as e:                     # a bot that cannot answer loses
-            return FORFEIT, str(e)
-        except Exception as e:                       # anything unforeseen: still its loss
-            return FORFEIT, f'{type(e).__name__}: {e}'
+            return FORFEIT, ForfeitReason('bridge_error', str(e))
+        except Exception as e:  # noqa: BLE001 - foreign code cannot abort the arena
+            return FORFEIT, ForfeitReason(
+                'bridge_error', f'{type(e).__name__}: {e}', retryable=True)
         if a is FORFEIT:
-            return a, illegal
+            return a, ForfeitReason('explicit_forfeit', str(illegal))
         if a in legal_actions(s):
             if illegal:
                 print(f'  WARN bridge {self.bridge.name}: self-reported {illegal}', flush=True)
@@ -289,7 +466,8 @@ class ForeignBot:
         # An illegal move is a translation bug in the bridge far more often than a bad
         # engine, so the exact position is recorded to make it reproducible.
         self._dump(s, a, illegal)
-        return FORFEIT, f'illegal action {a} (illegal={illegal})'
+        return FORFEIT, ForfeitReason(
+            'illegal_move', f'illegal action {a} (illegal={illegal})')
 
     def _dump(self, s: State, a, illegal):
         record = {'bot': self.bridge.name,
@@ -321,15 +499,15 @@ def _opponent_move(bot, duel, attempts=3):
         move = bot(duel.s, duel.rng)
         if move[0] is not FORFEIT:
             return move
-        reason = str(move[1]).lower()
-        if any(word in reason for word in ('closed', 'exited', 'not running',
-                                           'not found', 'cannot start', 'within')):
+        reason = move[1]
+        if isinstance(reason, ForfeitReason) and not reason.retryable:
             break
     return move
 
 
 def play(net, opponent, device, games=40, sims=64, c_puct=1.6, temp=0.6, max_plies=220,
-         seed=0, gumbel=True, gumbel_cap=16, logdir=None):
+         seed=0, gumbel=True, gumbel_cap=16, logdir=None, gumbel_value_mixture='adapted',
+         on_game_complete: Callable[[dict], None] | None = None):
     """Play `net`, with search, against a foreign engine. Colours alternate per game."""
     if games < 0:
         raise ValueError('games must be non-negative')
@@ -341,7 +519,9 @@ def play(net, opponent, device, games=40, sims=64, c_puct=1.6, temp=0.6, max_pli
         # No games means no bridge to start: an empty match must not require the
         # foreign engine to be installed at all.
         return summarise(duels, opponent=opponent, opp_forfeits=0, sims=sims,
-                         temperature=temp, gumbel=bool(gumbel), seed=seed)
+                         temperature=temp, gumbel=bool(gumbel), seed=seed,
+                         gumbel_value_mixture=gumbel_value_mixture,
+                         **{outcome: 0 for outcome in TECHNICAL_OUTCOMES})
     enc = version_for_planes(net.planes)
     logdir.mkdir(parents=True, exist_ok=True)
     bot = ForeignBot(OPPONENTS[opponent], logdir, seed)
@@ -352,7 +532,7 @@ def play(net, opponent, device, games=40, sims=64, c_puct=1.6, temp=0.6, max_pli
                      and d.s.winner is None and d.s.ply < max_plies]
             if group:
                 _search_round(net, group, device, enc, sims, c_puct, temp, max_plies,
-                              gumbel, gumbel_cap)
+                               gumbel, gumbel_cap, gumbel_value_mixture=gumbel_value_mixture)
             for d in live:
                 # Re-checked rather than reusing `group`: a game can end on our move, and
                 # a finished board has no legal action for the foreign bot to answer with.
@@ -361,18 +541,32 @@ def play(net, opponent, device, games=40, sims=64, c_puct=1.6, temp=0.6, max_pli
                     if action is FORFEIT:
                         d.result = 1.0                 # the foreign bot abandoned; we win
                         d.forfeit = note
+                        d.technical_outcome = (
+                            note.outcome if isinstance(note, ForfeitReason)
+                            else 'bridge_error')
                     else:
                         d.s = apply_unchecked(d.s, action)
             still = []
             for d in live:
                 if d.result is not None:
-                    continue                           # decided by forfeit above
-                if d.s.winner is not None:
+                    pass                               # decided by forfeit above
+                elif d.s.winner is not None:
                     d.result = 1.0 if (d.s.winner == 0) != d.swap else 0.0
+                    d.technical_outcome = 'honest_game'
                 elif d.s.ply >= max_plies:
                     d.result = 0.5
+                    d.technical_outcome = 'honest_game'
                 else:
                     still.append(d)
+                    continue
+                if on_game_complete is not None:
+                    outcome = d.technical_outcome
+                    on_game_complete(summarise(
+                        [d], opponent=opponent,
+                        opp_forfeits=int(d.forfeit is not None), sims=sims,
+                         temperature=temp, gumbel=bool(gumbel), seed=seed,
+                         gumbel_value_mixture=gumbel_value_mixture,
+                        **{name: int(name == outcome) for name in TECHNICAL_OUTCOMES}))
             live = still
     finally:
         bot.close()
@@ -381,34 +575,58 @@ def play(net, opponent, device, games=40, sims=64, c_puct=1.6, temp=0.6, max_pli
         # A win rate inflated by forfeits measures the bridge, not the network.
         print(f'  NOTE {forfeits} of {len(duels)} games ended in an opponent forfeit; '
               f'they count as wins. See {logdir}', flush=True)
+    counts = {name: sum(getattr(d, 'technical_outcome', None) == name for d in duels)
+              for name in TECHNICAL_OUTCOMES}
     return summarise(duels, opponent=opponent, opp_forfeits=forfeits, sims=sims,
-                     temperature=temp, gumbel=bool(gumbel), seed=seed)
+                     temperature=temp, gumbel=bool(gumbel), seed=seed,
+                     gumbel_value_mixture=gumbel_value_mixture, **counts)
 
 
 def main():
     p = argparse.ArgumentParser(description='Foreign-bot arena')
-    p.add_argument('--net', required=True)
+    p.add_argument('--net')
     p.add_argument('--opponent', required=True, choices=sorted(OPPONENTS))
     p.add_argument('--games', type=int, default=40)
     p.add_argument('--sims', type=int, default=64)
     p.add_argument('--temp', type=float, default=0.6)
     p.add_argument('--puct', action='store_true', help='PUCT search instead of Gumbel')
+    p.add_argument('--gumbel-value-mixture', choices=('adapted', 'canonical'), default='adapted')
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--max-plies', type=int, default=220)
     p.add_argument('--threads', type=int, help='intra-op threads; defaults to every core')
     p.add_argument('--logdir', help='where bridge stderr and illegal-move dumps go')
     p.add_argument('--device', help="'cpu' or 'cuda'; overrides autodetection")
     p.add_argument('--output', default='', help='write the result dict here as JSON')
+    p.add_argument('--dry-run', action='store_true', help='list requirements and exit')
+    p.add_argument('--smoke', action='store_true',
+                   help='handshake, request one legal move, close, and exit')
     a = p.parse_args()
-    if a.games <= 0:
+    if a.games <= 0 and not (a.dry_run or a.smoke):
         p.error('--games must be positive')
+
+    report = preflight([a.opponent])
+    if a.dry_run:
+        print(json.dumps(report, indent=2))
+        return 0 if report['ok'] else 1
+    if not report['ok']:
+        for req in report['opponents'][0]['missing']:
+            detail = f" ({req['detail']})" if req['detail'] else ''
+            print(f"missing {req['kind']}: {req['value']}{detail}", file=sys.stderr)
+        p.error(f'foreign bridge preflight failed for {a.opponent}')
+    if a.smoke:
+        result = smoke(a.opponent, a.logdir, a.seed)
+        print(json.dumps(result, indent=2))
+        return 0 if result['ok'] else 1
+    if not a.net:
+        p.error('--net is required unless --dry-run or --smoke is used')
 
     dev = resolve_device(a.device)
     configure_threads(a.threads)
     ck = load_checkpoint(a.net, map_location=dev)
     net = net_from_checkpoint(ck, dev)
     r = play(net, a.opponent, dev, a.games, a.sims, temp=a.temp, seed=a.seed,
-             max_plies=a.max_plies, gumbel=not a.puct, logdir=a.logdir)
+             max_plies=a.max_plies, gumbel=not a.puct, logdir=a.logdir,
+             gumbel_value_mixture=a.gumbel_value_mixture)
     r.update(net=str(a.net), generation=ck.get('generation'),
              iteration=ck.get('iteration'), device=str(dev), net_name=Path(a.net).name)
     if a.output:

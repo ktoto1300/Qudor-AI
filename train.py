@@ -36,7 +36,8 @@ DEFAULT_OUTPUT = ROOT / 'runs' / 'Checkpoints'
 def _validate_matched_configs(gpu: dict, cpu: dict) -> None:
     """Hardware profiles for one lineage must share schedule and game semantics."""
     for key in ('encoding', 'channels', 'blocks', 'se', 'gumbel', 'gumbel_cap',
-                'sims', 'fast_sims', 'full_frac', 'total_steps'):
+                'sims', 'fast_sims', 'full_frac', 'total_steps',
+                'gumbel_value_mixture'):
         if gpu.get(key) != cpu.get(key):
             raise ValueError(f'CPU/GPU configs disagree on {key}: '
                              f'{cpu.get(key)!r} != {gpu.get(key)!r}')

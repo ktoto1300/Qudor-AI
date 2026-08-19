@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from quoridor_ai.az_selfplay import search
 from quoridor_ai.core.encoding import version_for_planes
-from quoridor_ai.core.engine import State, ACTION_SIZE, apply_unchecked, legal_actions
+from quoridor_ai.core.engine import RULES_VERSION, State, ACTION_SIZE, apply_unchecked, legal_actions
 from quoridor_ai.model import arch_of, net_from_checkpoint
 from quoridor_ai.quant import quantized_for
 from quoridor_ai.runtime import resolve_device
@@ -46,7 +46,7 @@ SCAN_LOCK = threading.Lock()
 MODEL_META: dict[str, tuple[tuple[float, int], dict | None]] = {}
 # Same map, persisted, so the cost is paid once ever rather than once per server start.
 MODEL_META_FILE = ROOT / ".model_index.json"
-MODEL_META_VERSION = 2
+MODEL_META_VERSION = 3
 # Filled in by main() from the actual --host/--port so the allowlist matches the running server.
 ALLOWED_ORIGINS: set[str] = set()
 
@@ -73,7 +73,10 @@ def load_meta_cache() -> None:
                 desc = {"path": rel, "label": str(desc["label"]),
                         "generation": int(desc["generation"]), "iteration": int(desc["iteration"]),
                         "params": int(desc["params"]),
-                        "winRate": None if desc["winRate"] is None else float(desc["winRate"])}
+                        "winRate": None if desc["winRate"] is None else float(desc["winRate"]),
+                        "rulesVersion": (None if desc["rulesVersion"] is None
+                                         else int(desc["rulesVersion"])),
+                        "official": bool(desc["official"]), "legacy": bool(desc["legacy"])}
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
         MODEL_META[str(rel)] = (stamp, desc)
@@ -107,6 +110,8 @@ def describe_checkpoint(rel: str, path: Path) -> dict | None:
     gate = data.get("gate") or {}
     gen, it = data.get("generation"), data.get("iteration")
     win = gate.get("win_rate")
+    rules_version = data.get("rules_version")
+    official = rules_version == RULES_VERSION
     channels, blocks, _planes, _se = arch_of(data["model"])
     # Counted off the built network rather than derived from channels x blocks: it is the
     # figure the ordering below actually compares, so it should not be an estimate of itself.
@@ -121,7 +126,8 @@ def describe_checkpoint(rel: str, path: Path) -> dict | None:
         note = "стартовая сеть, не обучена"
     return {"path": rel, "label": f"{Path(rel).stem} — сеть {channels}×{blocks}, {note}",
             "generation": gen or 0, "iteration": it if isinstance(it, int) else -1,
-            "winRate": win, "params": params}
+            "winRate": win, "params": params, "rulesVersion": rules_version,
+            "official": official, "legacy": not official}
 
 
 def safe_models(force: bool = False) -> list[dict]:
@@ -178,11 +184,13 @@ def _scan_models() -> list[dict]:
         MODEL_META.pop(rel, None)
     # checkpoints/ and runs/Checkpoints/ hold byte-identical copies of the same networks
     # (training writes one, the viewer dir mirrors it), so the same (size, label) is the
-    # same net at the same point in training - keep the shortest path.
+    # same net at the same point in training - prefer its published checkpoint path.
     unique: dict[tuple[int, str], dict] = {}
     for m in found:
         k = (m["size"], m["label"])
-        if k not in unique or len(m["path"]) < len(unique[k]["path"]):
+        rank = (not m["path"].startswith("checkpoints/"), len(m["path"]), m["path"])
+        if k not in unique or rank < (not unique[k]["path"].startswith("checkpoints/"),
+                                      len(unique[k]["path"]), unique[k]["path"]):
             unique[k] = m
     found = list(unique.values())
     # Strongest first, since the client loads the first entry on startup. Capacity outranks
@@ -190,7 +198,8 @@ def _scan_models() -> list[dict]:
     # reaches generation 12 while the real 128x10 run is still at 8. At equal generation a
     # gated checkpoint outranks an ungated one - best.pt won a tournament, whereas latest.pt
     # has only trained further, which is not by itself evidence of being stronger.
-    found.sort(key=lambda m: (-m["params"], -m["generation"], m["winRate"] is None,
+    found.sort(key=lambda m: (not m["official"], not m["path"].startswith("checkpoints/"),
+                              -m["params"], -m["generation"], m["winRate"] is None,
                               -m["iteration"], -m["mtime"], m["path"]))
     MODEL_CACHE = [{k: v for k, v in m.items() if k not in ("mtime", "size")} for m in found]
     MODEL_CACHE_AT = now

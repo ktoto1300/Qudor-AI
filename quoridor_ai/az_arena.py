@@ -86,7 +86,8 @@ def summarise(duels, **extra) -> dict:
 
 
 def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel, gumbel_cap,
-                  tanh_value_transform=False, root_visit_compensation=False):
+                  tanh_value_transform=False, root_visit_compensation=False,
+                  gumbel_value_mixture="adapted"):
     """Search, then move, for every duel in `group` - one batched pass per round.
 
     Shared by the promotion gate and by the baseline harness, so that a win rate against a
@@ -102,7 +103,8 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
         for d in group:
             d.sched = _Sched(d.root, d.rng, sims, gumbel_cap,
                              tanh_value_transform=tanh_value_transform,
-                             root_visit_compensation=root_visit_compensation)
+                             root_visit_compensation=root_visit_compensation,
+                             value_mixture=gumbel_value_mixture)
         rounds = max(d.sched.budget for d in group)
     else:
         rounds = sims
@@ -115,7 +117,8 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
             if gumbel:
                 leaf, path = _select_gumbel(d, max_plies,
                                             tanh_value_transform=tanh_value_transform,
-                                            root_visit_compensation=root_visit_compensation)
+                                            root_visit_compensation=root_visit_compensation,
+                                            value_mixture=gumbel_value_mixture)
                 if leaf is None:            # halving schedule exhausted early
                     spent[id(d)] = rounds
                     continue
@@ -138,7 +141,8 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
             # agrees with a 400-sim search only 54% of the time, against 66% for plain PUCT
             # at the same budget.
             probs = _improved_policy(d.root, tanh_value_transform=tanh_value_transform,
-                                     root_visit_compensation=root_visit_compensation).astype(np.float64)
+                                     root_visit_compensation=root_visit_compensation,
+                                     value_mixture=gumbel_value_mixture).astype(np.float64)
         else:
             probs = d.root.n.astype(np.float64)
             if probs.sum() <= 0:
@@ -156,7 +160,7 @@ def _search_round(net, group, device, enc, sims, c_puct, temp, max_plies, gumbel
 
 def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a, enc_b,
                 gumbel=False, gumbel_cap=16, tanh_value_transform=False,
-                root_visit_compensation=False):
+                root_visit_compensation=False, gumbel_value_mixture="adapted"):
     duels = [_Duel(i % 2 == 1, seed * 104729 + i) for i in range(games)]
     live = list(duels)
     while live:
@@ -169,7 +173,8 @@ def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
             if group:
                 _search_round(net, group, device, enc, sims, c_puct, temp, max_plies,
                               gumbel, gumbel_cap, tanh_value_transform=tanh_value_transform,
-                              root_visit_compensation=root_visit_compensation)
+                              root_visit_compensation=root_visit_compensation,
+                              gumbel_value_mixture=gumbel_value_mixture)
         still = []
         for d in live:
             if d.s.winner is not None:
@@ -183,7 +188,8 @@ def _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
 
 
 def compare(a, b, device, games=40, sims=100, c_puct=1.6, temp=0.6, max_plies=220, seed=0,
-            gumbel=False, gumbel_cap=16, tanh_value_transform=False, root_visit_compensation=False):
+            gumbel=False, gumbel_cap=16, tanh_value_transform=False, root_visit_compensation=False,
+            gumbel_value_mixture="adapted"):
     """Score net `a` against net `b`. Returns a dict; win_rate counts draws as a half."""
     if games < 0:
         raise ValueError('games must be non-negative')
@@ -191,8 +197,10 @@ def compare(a, b, device, games=40, sims=100, c_puct=1.6, temp=0.6, max_plies=22
     enc_b = version_for_planes(b.planes)
     duels = _play_batch(a, b, device, games, sims, c_puct, temp, max_plies, seed, enc_a,
                         enc_b, gumbel, gumbel_cap, tanh_value_transform=tanh_value_transform,
-                        root_visit_compensation=root_visit_compensation)
-    return summarise(duels, sims=sims, temperature=temp, gumbel=bool(gumbel), seed=seed)
+                        root_visit_compensation=root_visit_compensation,
+                        gumbel_value_mixture=gumbel_value_mixture)
+    return summarise(duels, sims=sims, temperature=temp, gumbel=bool(gumbel), seed=seed,
+                     gumbel_value_mixture=gumbel_value_mixture)
 
 
 def run(candidate, best, games, out, sims=100, temp=0.6, seed=0, gumbel=False, device=None):

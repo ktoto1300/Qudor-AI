@@ -15,9 +15,203 @@ provided, except bounded to this one structure and backed by a file we control.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import numpy as np
+
+
+class PrioritizedReplay:
+    """Experimental persistent priority sampler for a same-capacity replay ring.
+
+    This sidecar deliberately does not own samples or integrate with ``DiskReplay``.
+    Call ``add`` whenever the corresponding replay receives one sample, and use the
+    returned logical indices with the replay's insertion-order indexing.
+    """
+
+    def __init__(self, capacity: int, *, enabled: bool = False, alpha: float = 0.6,
+                 seed: int | None = None, directory=None):
+        self.capacity = int(capacity)
+        if self.capacity <= 0:
+            raise ValueError('capacity must be positive')
+        self.enabled = bool(enabled)
+        self.alpha = float(alpha)
+        if not np.isfinite(self.alpha) or self.alpha < 0:
+            raise ValueError('alpha must be finite and non-negative')
+        self.size = 0
+        self.head = 0
+        self._priorities = np.zeros(self.capacity, dtype=np.float64)
+        self._rng = np.random.default_rng(seed)
+        self.path = None
+        if directory is not None:
+            directory = Path(directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            self.path = directory / f'priorities_{self.capacity}.npz'
+            if self.path.exists():
+                self._load(self.path)
+
+    def __len__(self):
+        return self.size
+
+    def _physical_index(self, logical_index: int):
+        if not 0 <= logical_index < self.size:
+            raise IndexError(logical_index)
+        return (self.head - self.size + logical_index) % self.capacity
+
+    def _logical_priorities(self):
+        return np.asarray([
+            self._priorities[self._physical_index(i)] for i in range(self.size)
+        ])
+
+    @staticmethod
+    def _validate_priority(priority):
+        priority = float(priority)
+        if not np.isfinite(priority) or priority < 0:
+            raise ValueError('priorities must be finite and non-negative')
+        return priority
+
+    def add(self, priority: float | None = None):
+        """Add one priority, overwriting the oldest entry when the ring is full."""
+        if priority is None:
+            current = self._logical_priorities()
+            priority = float(current.max()) if np.any(current > 0) else 1.0
+        priority = self._validate_priority(priority)
+        self._priorities[self.head] = priority
+        self.head = (self.head + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
+        self.flush()
+
+    def extend(self, priorities):
+        for priority in priorities:
+            if priority is None:
+                current = self._logical_priorities()
+                priority = float(current.max()) if np.any(current > 0) else 1.0
+            priority = self._validate_priority(priority)
+            self._priorities[self.head] = priority
+            self.head = (self.head + 1) % self.capacity
+            self.size = min(self.size + 1, self.capacity)
+        self.flush()
+
+    def update(self, indices, priorities):
+        indices = list(indices)
+        priorities = list(priorities)
+        if len(indices) != len(priorities):
+            raise ValueError('indices and priorities must have the same length')
+        validated = [self._validate_priority(priority) for priority in priorities]
+        physical = [self._physical_index(int(index)) for index in indices]
+        for index, priority in zip(physical, validated, strict=True):
+            self._priorities[index] = priority
+        self.flush()
+
+    def probabilities(self):
+        """Return probabilities in the same oldest-to-newest order as DiskReplay."""
+        if self.size == 0:
+            return np.empty(0, dtype=np.float64)
+        priorities = self._logical_priorities()
+        if not self.enabled or not np.any(priorities > 0):
+            return np.full(self.size, 1.0 / self.size, dtype=np.float64)
+        weights = np.power(priorities, self.alpha)
+        total = float(weights.sum())
+        if not np.isfinite(total) or total <= 0:
+            return np.full(self.size, 1.0 / self.size, dtype=np.float64)
+        return weights / total
+
+    def sample(self, count: int, *, replace: bool = False):
+        """Return logical replay indices and their current sampling probabilities."""
+        count = int(count)
+        if count < 0:
+            raise ValueError('sample count must be non-negative')
+        if not replace:
+            count = min(count, self.size)
+        elif self.size == 0 and count:
+            raise ValueError('cannot sample from an empty replay')
+        probabilities = self.probabilities()
+        indices = self._rng.choice(
+            self.size, size=count, replace=replace, p=probabilities
+        ).astype(np.int64, copy=False)
+        self.flush()
+        return indices, probabilities[indices]
+
+    def state_dict(self):
+        return {
+            'version': 1,
+            'capacity': self.capacity,
+            'enabled': self.enabled,
+            'alpha': self.alpha,
+            'size': self.size,
+            'head': self.head,
+            'priorities': self._priorities.copy(),
+            'rng_state': self._rng.bit_generator.state,
+        }
+
+    def import_state(self, state):
+        """Import an exported state without changing the sidecar's capacity."""
+        if int(state.get('version', 0)) != 1:
+            raise ValueError('unsupported priority sidecar version')
+        if int(state.get('capacity', -1)) != self.capacity:
+            raise ValueError('priority sidecar capacity does not match')
+        priorities = np.asarray(state['priorities'], dtype=np.float64)
+        if priorities.shape != (self.capacity,):
+            raise ValueError('priority sidecar has an invalid priorities shape')
+        if np.any(~np.isfinite(priorities)) or np.any(priorities < 0):
+            raise ValueError('priority sidecar contains invalid priorities')
+        size = int(state['size'])
+        head = int(state['head'])
+        if not 0 <= size <= self.capacity or not 0 <= head < self.capacity:
+            raise ValueError('priority sidecar has invalid ring metadata')
+        alpha = float(state['alpha'])
+        if not np.isfinite(alpha) or alpha < 0:
+            raise ValueError('priority sidecar has invalid alpha')
+        self.enabled = bool(state['enabled'])
+        self.alpha = alpha
+        self.size = size
+        self.head = head
+        self._priorities[:] = priorities
+        self._rng.bit_generator.state = state['rng_state']
+        self.flush()
+
+    def export(self, path=None):
+        """Atomically export priorities, ring metadata, settings, and RNG state."""
+        path = self.path if path is None else Path(path)
+        if path is None:
+            raise ValueError('an export path is required without a sidecar directory')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        state = self.state_dict()
+        tmp = path.with_name(path.name + '.tmp')
+        with tmp.open('wb') as file:
+            np.savez(
+                file,
+                version=np.asarray(state['version'], dtype=np.int64),
+                capacity=np.asarray(state['capacity'], dtype=np.int64),
+                enabled=np.asarray(state['enabled'], dtype=np.bool_),
+                alpha=np.asarray(state['alpha'], dtype=np.float64),
+                size=np.asarray(state['size'], dtype=np.int64),
+                head=np.asarray(state['head'], dtype=np.int64),
+                priorities=state['priorities'],
+                rng_state=np.asarray(json.dumps(state['rng_state'])),
+            )
+        os.replace(tmp, path)
+
+    def _load(self, path):
+        try:
+            with np.load(path, allow_pickle=False) as saved:
+                state = {
+                    'version': int(saved['version']),
+                    'capacity': int(saved['capacity']),
+                    'enabled': bool(saved['enabled']),
+                    'alpha': float(saved['alpha']),
+                    'size': int(saved['size']),
+                    'head': int(saved['head']),
+                    'priorities': saved['priorities'],
+                    'rng_state': json.loads(str(saved['rng_state'])),
+                }
+        except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(f'unreadable priority sidecar {path}: {exc}') from exc
+        self.import_state(state)
+
+    def flush(self):
+        if self.path is not None:
+            self.export(self.path)
 
 
 class DiskReplay:

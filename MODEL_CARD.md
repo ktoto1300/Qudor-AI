@@ -18,12 +18,14 @@
 The table below catalogs all official and published checkpoints residing in [`checkpoints/`](checkpoints/). Checksums are computed using SHA-256 over raw binary contents.
 
 > [!NOTE]
-> **Published Checkpoints vs. Server Evaluation Runs (`gen69` vs. `gen85`):**
-> - **Official Published Checkpoints:** The repository tracks and distributes `gen69_best.pt` and `gen69_latest.pt` under `RULES_VERSION = 2` in [`checkpoints/`](checkpoints/), alongside legacy `gen13_*` models.
-> - **Historical Server Evaluation Runs (`gen85`):** References to `gen85` in tournament records and benchmark summaries designate server evaluation runs under `official_rules_v2_batched` rather than static checkpoint binaries published in the `checkpoints/` directory.
+> **Published Checkpoints:** The repository tracks and distributes `gen85_best.pt`,
+> `gen69_best.pt`, and `gen69_latest.pt` under `RULES_VERSION = 2`, alongside legacy
+> `gen13_*` models. Only the promoted gen85 champion is published; there is no published
+> `gen85_latest.pt` full-training-state checkpoint.
 
 | Checkpoint File | Lineage / Description | Generation | Iteration | Input Planes | Size (Bytes) | SHA-256 Hash | Rules Version |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- | :---: |
+| [`checkpoints/gen85_best.pt`](checkpoints/gen85_best.pt) | Official Rules v2 Batched Tournament Champion | 85 | 1759 | 16 (v3) | 13,018,066 | `2126e3c2937916972d633efee237f0176cc4e3b8bb23fb86de86189a8712e170` | `2` |
 | [`checkpoints/gen69_best.pt`](checkpoints/gen69_best.pt) | Official Rules v2 Tournament Champion | 69 | 1419 | 16 (v3) | 13,022,994 | `4833101367d76b7d7a508d8d728b0ddd701d8330bbf5c50eda10acc08d26287c` | `2` |
 | [`checkpoints/gen69_latest.pt`](checkpoints/gen69_latest.pt) | Official Rules v2 Full Training State | 69 | 1429 | 16 (v3) | 236,389,946 | `a4c569d8172c9f12824961ac3d474fe34a5dbf2ff403dc34976d992f99fb6d8c` | `2` |
 | [`checkpoints/gen13_best.pt`](checkpoints/gen13_best.pt) | Legacy Colab Best (pre-v2 geometry) | 13 | 439 | 16 (v3) | 13,024,927 | `377355c77f8c5c5d1dc3dd31c3e0358e67d98cffe669754de61319ee30924c49` | Legacy |
@@ -35,7 +37,7 @@ The table below catalogs all official and published checkpoints residing in [`ch
 
 ### 1. Canonical State Representation (v3 Encoder — 16 Planes)
 
-Used by all standard and published checkpoints (`gen69_best.pt`, `gen69_latest.pt`, `gen13_best.pt`), as well as active server evaluation runs (`gen85`, etc.). The representation is framed from the perspective of the side to move (canonical perspective flip for player 1, mapping the player's goal row to row 0):
+Used by all standard and published checkpoints (`gen85_best.pt`, `gen69_best.pt`, `gen69_latest.pt`, and `gen13_best.pt`). The representation is framed from the perspective of the side to move (canonical perspective flip for player 1, mapping the player's goal row to row 0):
 
 - **Input Dimensions:** `(16, 9, 9)`
 - **Plane Layout:**

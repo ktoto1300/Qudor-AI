@@ -92,17 +92,20 @@ Published checkpoints live in `checkpoints/` and are stored via Git LFS. All of 
 the v3 16-plane encoder and the 128×10 SE ResNet architecture.
 
 - **`gen69_*`**: Belongs to the `official_rules_v2` lineage (`RULES_VERSION=2`, first official-rules-valid campaign, iteration 1419/1429). The `gen69_best.pt` champion achieved 100% win rates across all decisive games against 4 external engines in the overnight tournament (450 games, 0 losses, 0 draws). Full SHA-256 integrity hashes, architecture details, and baseline benchmarks are documented in [`MODEL_CARD.md`](MODEL_CARD.md).
-- **`gen85`**: Continuation champion under `official_rules_v2_batched`, evaluated in multi-engine matches (20 games per opponent at 64 sims, temperature 0.5; winning 20-0 against `berlioz10`, `marcobt15`, `dimitrijekaranfilovic`, `gorisanson`, `cryer`, and 11-9 against `sigma`).
+- **`gen85_best.pt`**: Published continuation champion under `official_rules_v2_batched`, evaluated in multi-engine matches (20 games per opponent at 64 sims, temperature 0.5; winning 20-0 against `berlioz10`, `marcobt15`, `dimitrijekaranfilovic`, `gorisanson`, `cryer`, and 11-9 against `sigma`). No `gen85_latest.pt` full training state is published.
 - **`gen13_*`**: Legacy checkpoints from the earlier Colab campaign trained before the wall-overlap geometry fix.
 
 | File | Generation | Iteration | Rules Version | Encoder | Architecture | Arena Gate / Note |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| [`checkpoints/gen85_best.pt`](checkpoints/gen85_best.pt) | 85 | 1759 | 2 | v3 (16 planes) | 128×10 SE ResNet | 68.75% (44/64), SHA-256 `2126e3c2937916972d633efee237f0176cc4e3b8bb23fb86de86189a8712e170` |
 | [`checkpoints/gen69_best.pt`](checkpoints/gen69_best.pt) | 69 | 1419 | 2 | v3 (16 planes) | 128×10 SE ResNet | Tournament Champion ([`MODEL_CARD.md`](MODEL_CARD.md)) |
 | [`checkpoints/gen69_latest.pt`](checkpoints/gen69_latest.pt) | 69 | 1429 | 2 | v3 (16 planes) | 128×10 SE ResNet | Full training state (optimizer, replay) |
 | [`checkpoints/gen13_best.pt`](checkpoints/gen13_best.pt) | 13 | 439 | Legacy | v3 (16 planes) | 128×10 SE ResNet | 85.2% (54/64) (pre-v2 geometry) |
 | [`checkpoints/gen13_latest.pt`](checkpoints/gen13_latest.pt) | 13 | 444 | Legacy | v3 (16 planes) | 128×10 SE ResNet | Legacy training state |
 
-The viewer lists these in its model menu. The arena gate is the fraction of gated games
+The viewer lists official-rules checkpoints first and separates the legacy `gen13_*`
+checkpoints so they cannot be mistaken for official models. It automatically selects the
+strongest published official checkpoint, currently `gen85_best.pt`. The arena gate is the fraction of gated games
 won against the previous best network at gate settings from the training configuration.
 
 ### Rules variant and search note
@@ -318,6 +321,41 @@ observations are informal and are not used as a formal evaluation metric.
 
 For a meaningful comparison, report the configuration, checkpoint, encoding version, MCTS simulations, number of games, player-color balancing, seed, and confidence interval.
 
+### Laptop foreign-engine workflow
+
+This workflow uses `gen85_best.pt` against third-party engines only; it never adds the
+project's `rusher` or `greedy` baselines. Start with dependency inspection, which does not
+load the checkpoint or start a bridge:
+
+```bash
+python tools/overnight_arena.py --net checkpoints/gen85_best.pt --profile cpu-laptop --dry-run
+```
+
+After external bot repositories and weights are available, smoke-test selected bridges:
+
+```bash
+python tools/foreign_arena.py --opponent sigma --smoke
+```
+
+Then run the resumable serial arena. It persists after each game, excludes known-broken or
+repeatedly failing bridges, and reports honest games separately from technical forfeits:
+
+```bash
+python tools/overnight_arena.py --net checkpoints/gen85_best.pt --profile cpu-laptop \
+  --only berlioz,marcobt15,dimi,gorisanson,sigma --hours 8 --batch 10 \
+  --outdir results/local_foreign_gen85
+```
+
+External bot repositories, native binaries and Sigma weights are not distributed in this
+repository and cannot be restored automatically.
+
+### Human matches and endgame diagnostics
+
+`qudor-human-match` validates JSONL human-game records and emits deterministic JSON or
+Markdown summaries. `python -m quoridor_ai.no_wall_solver --help` exposes the exact bounded
+diagnostic solver for positions where both players have zero walls. Neither tool changes
+the published checkpoint or training behavior.
+
 ## Deployment on the GPU server
 
 A dedicated server instance (RTX 3060 Ti 8 GB, 8 cores, 7.9 GB RAM) ran the
@@ -350,7 +388,7 @@ stored via Git LFS. Dependencies and environments are pinned in [`requirements-l
 - The built-in HTTP server is meant for a local viewer, not a public production deployment.
 - The legacy modules are kept for reproducibility of old experiments and are not the recommended new pipeline.
 - Training results depend on the search configuration, the number of games, the random seed and the statistical power of the arena test.
-- The legacy `gen13_*` checkpoints were trained before the wall-overlap correction and do not follow the official rules; the `gen69_*` checkpoints are the first published official-rules models (`RULES_VERSION=2`).
+- The legacy `gen13_*` checkpoints were trained before the wall-overlap correction and do not follow the official rules; the `gen69_*` checkpoints are the first published official-rules models (`RULES_VERSION=2`), and `gen85_best.pt` is the newest published champion. No gen85 latest/full-training-state checkpoint is published.
 - The results against external engines come from open-source hobby/student engines and are not a basis for claims against commercial engines or human masters.
 - Server deployment uses machine-specific infrastructure outside this public repository.
 
@@ -364,18 +402,21 @@ stored via Git LFS. Dependencies and environments are pinned in [`requirements-l
 5. [x] **Model Card Publication:** Published [`MODEL_CARD.md`](MODEL_CARD.md) detailing architecture parameters, training methodology, SHA-256 hashes, and baseline benchmarks for `gen69_best.pt`.
 6. [x] **Multi-Engine Tournament Coordinator:** Implemented `tools/foreign_arena.py` with multi-process bridge adapters (`tools/bridges/`) testing against 6+ external Quoridor engines.
 
-### Next Roadmap Items (Phase 2)
-1. [ ] **Resign Margin with Structured Reason Logging (A4):** Calibrate `resign_v` from -0.95 to -0.90 with opponent safety checks and reason logging.
-2. [ ] **Visit-Averaged Policy-Target EMA (A5):** KataGo-style policy target smoothing ($p_t = (1-\beta) \cdot p_{\text{visit}} + \beta \cdot p_{\text{prev}}$) during exploration moves.
-3. [ ] **$\text{TD}(\lambda)$ Target Bootstrapping (B7):** Multi-step value target blending across game plies.
-4. [ ] **Prioritized Experience Replay (B8):** TD-error prioritized sampling for `DiskReplay`.
-5. [ ] **Opening Bank Initialization (B9):** Diverse opening book injection to stabilize initial self-play plies.
-6. [ ] **Retrograde Endgame Solver (C10):** Fast tablebase solver for boundary race endgames with $\le 1$ wall.
-7. [ ] **SaberNet / SimpleGEMM Speedup Blocks (C11):** Matrix multiplication kernels / lightweight architecture optimizations if batching becomes bottleneck.
+### v2.1 Functional Additions
+1. [x] **Resign Diagnostics (A4):** Optional structured reason/Q/streak/ply logging; default threshold remains unchanged.
+2. [x] **Policy-Target EMA (A5):** Optional early-target smoothing; disabled by default.
+3. [x] **TD($\lambda$) Helper (B7):** Alternating-player target helper is tested but intentionally not production-wired.
+4. [x] **Prioritized Replay Prototype (B8):** Standalone persistent sampler is tested but disabled in production training.
+5. [x] **Opening Bank (B9):** Versioned, legal, mirrored and seeded opening lines; disabled by default.
+6. [x] **Bounded No-Wall Solver (C10):** Exact diagnostic solver; not integrated into MCTS.
+7. [x] **Gumbel Mixture Comparison:** Current adapted mode remains default; canonical visit-weighted mode is opt-in.
+
+These additions are functionally tested, not strength-validated by a new training campaign.
+SaberNet/SimpleGEMM and large tablebases remain future work.
 
 ## Publication status
 
-This is a research/software preview, not a claim of superhuman play. The included code is intended to make the engine and training pipeline inspectable and reproducible. [`MODEL_CARD.md`](MODEL_CARD.md) is now published and active for the official-rules champion `gen69_best.pt` (`RULES_VERSION=2`), documenting its SHA-256 integrity hash, training configuration, and baseline tournament results. Future releases will continue to maintain and publish model cards for subsequent training campaigns.
+This is a research/software preview, not a claim of superhuman play. The included code is intended to make the engine and training pipeline inspectable and reproducible. [`MODEL_CARD.md`](MODEL_CARD.md) records the published official-rules checkpoints, including the current `gen85_best.pt` champion (`RULES_VERSION=2`) and its SHA-256 integrity hash. No `gen85_latest.pt` is published. Future releases will continue to maintain model cards for subsequent training campaigns.
 
 ## License
 

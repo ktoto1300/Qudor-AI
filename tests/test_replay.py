@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from quoridor_ai.replay import DiskReplay
+from quoridor_ai.replay import DiskReplay, PrioritizedReplay
 
 PLANES, ACTIONS, CAP = 11, 209, 8
 
@@ -64,3 +64,71 @@ def test_extend_rejects_wrong_sample_shapes(tmp_path):
         r.extend([(np.zeros((5, 9, 9), np.float32), PI[0], 0.0, 0.0)])
     with pytest.raises(ValueError, match='sample policy'):
         r.extend([(X[0], np.zeros(100, np.float32), 0.0, 0.0)])
+
+
+def test_priorities_are_uniform_when_disabled_or_all_zero():
+    sampler = PrioritizedReplay(4, seed=3)
+    sampler.extend([1, 20, 3, 4])
+    assert np.array_equal(sampler.probabilities(), np.full(4, 0.25))
+
+    sampler.enabled = True
+    sampler.update(range(4), np.zeros(4))
+    assert np.array_equal(sampler.probabilities(), np.full(4, 0.25))
+
+
+def test_priorities_update_and_follow_circular_overwrite():
+    sampler = PrioritizedReplay(3, enabled=True, alpha=1.0)
+    sampler.extend([1, 2, 3, 4])
+    assert np.allclose(sampler.probabilities(), np.asarray([2, 3, 4]) / 9)
+
+    sampler.update([0, 2], [8, 1])
+    assert np.allclose(sampler.probabilities(), np.asarray([8, 3, 1]) / 12)
+
+
+def test_priority_sampling_is_seeded_and_reports_probabilities():
+    first = PrioritizedReplay(4, enabled=True, alpha=1.0, seed=17)
+    second = PrioritizedReplay(4, enabled=True, alpha=1.0, seed=17)
+    first.extend([1, 2, 4, 8])
+    second.extend([1, 2, 4, 8])
+
+    indices, selected = first.sample(20, replace=True)
+    other_indices, other_selected = second.sample(20, replace=True)
+    assert np.array_equal(indices, other_indices)
+    assert np.array_equal(selected, other_selected)
+    assert np.array_equal(selected, first.probabilities()[indices])
+
+
+def test_priority_sidecar_exports_imports_and_resumes_rng(tmp_path):
+    sampler = PrioritizedReplay(
+        3, enabled=True, alpha=0.5, seed=11, directory=tmp_path
+    )
+    sampler.extend([1, 4, 9, 16])
+    sampler.sample(2, replace=True)
+
+    resumed = PrioritizedReplay(3, directory=tmp_path)
+    assert resumed.enabled
+    assert resumed.alpha == 0.5
+    assert np.array_equal(resumed.probabilities(), sampler.probabilities())
+    expected = sampler.sample(12, replace=True)
+    actual = resumed.sample(12, replace=True)
+    assert np.array_equal(actual[0], expected[0])
+    assert np.array_equal(actual[1], expected[1])
+
+    exported = tmp_path / 'manual.npz'
+    sampler.export(exported)
+    imported = PrioritizedReplay(3)
+    imported._load(exported)
+    assert np.array_equal(imported.probabilities(), sampler.probabilities())
+
+
+def test_priority_sidecar_rejects_invalid_updates_and_capacity(tmp_path):
+    sampler = PrioritizedReplay(2, enabled=True, directory=tmp_path)
+    sampler.extend([1, 2])
+    with pytest.raises(ValueError, match='same length'):
+        sampler.update([0], [1, 2])
+    with pytest.raises(ValueError, match='non-negative'):
+        sampler.update([0], [-1])
+    with pytest.raises(IndexError):
+        sampler.update([2], [1])
+    with pytest.raises(ValueError, match='capacity'):
+        PrioritizedReplay(3).import_state(sampler.state_dict())

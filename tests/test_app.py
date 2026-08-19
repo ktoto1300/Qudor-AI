@@ -81,6 +81,19 @@ def test_index_and_readonly_endpoints(server):
     assert get(server, "/api/nope")[0] == 404
 
 
+def test_models_prefer_gen85_and_mark_gen13_legacy(server):
+    models = get(server, "/api/models")[1]
+    assert models[0]["path"] == "checkpoints/gen85_best.pt"
+    assert models[0]["official"] is True
+    assert models[0]["legacy"] is False
+    assert models[0]["rulesVersion"] == 2
+
+    gen13 = [model for model in models if model["path"].startswith("checkpoints/gen13_")]
+    assert gen13
+    assert all(model["legacy"] is True and model["official"] is False for model in gen13)
+    assert all(model["rulesVersion"] is None for model in gen13)
+
+
 def test_mutations_require_the_csrf_token(server):
     for path, body in [("/api/reset", {}), ("/api/settings", {"mode": "ai"}),
                        ("/api/step", {}), ("/api/action", {"action": 67}),

@@ -129,7 +129,7 @@ def test_foreign_bot_can_warn_about_a_legal_fallback(capsys):
     bot = object.__new__(foreign_arena.ForeignBot)
 
     class Bridge:
-        argv = ['python', 'example_bridge.py']
+        argv = ('python', 'example_bridge.py')
         name = 'example_bridge.py'
 
         @staticmethod
@@ -157,6 +157,7 @@ def test_foreign_bot_forfeits_and_dumps_an_illegal_action(tmp_path):
     a, reason = bot(State(), None)
     assert a is foreign_arena.FORFEIT
     assert 'illegal action 9999' in reason
+    assert reason.outcome == 'illegal_move'
     record = json.loads(bot.dumpfile.read_text(encoding='utf-8'))
     assert record['bot'] == 'naughty.py' and record['action'] == 9999
 
@@ -174,6 +175,7 @@ def test_foreign_bot_turns_a_bridge_error_into_a_forfeit():
     bot.bridge = Bridge()
     a, reason = bot(State(), None)
     assert a is foreign_arena.FORFEIT and 'no such engine' in reason
+    assert reason.outcome == 'bridge_error'
 
 
 def test_foreign_bot_survives_a_failed_dump(tmp_path, capsys):
@@ -203,10 +205,11 @@ def test_opponent_move_retries_recoverable_glitches():
         def __call__(self, *_):
             calls.append(1)
             if len(calls) < 3:
-                return foreign_arena.FORFEIT, 'garbled line'
+                return foreign_arena.FORFEIT, foreign_arena.ForfeitReason(
+                    'bridge_error', 'garbled line', retryable=True)
             return 5, None
 
-    action, note = foreign_arena._opponent_move(Bot(), duel)
+    action, _note = foreign_arena._opponent_move(Bot(), duel)
     assert action == 5 and len(calls) == 3
 
 
@@ -217,9 +220,10 @@ def test_opponent_move_gives_up_immediately_on_a_dead_bridge():
     class Bot:
         def __call__(self, *_):
             calls.append(1)
-            return foreign_arena.FORFEIT, 'bridge exited with code 1; see ...'
+            return foreign_arena.FORFEIT, foreign_arena.ForfeitReason(
+                'bridge_error', 'bridge exited with code 1; see ...')
 
-    action, reason = foreign_arena._opponent_move(Bot(), duel, attempts=3)
+    action, _reason = foreign_arena._opponent_move(Bot(), duel, attempts=3)
     assert action is foreign_arena.FORFEIT and len(calls) == 1
 
 
@@ -233,3 +237,90 @@ def test_play_rejects_negative_games_and_unknown_opponents():
         foreign_arena.play(None, 'vader', None, games=-1)
     with pytest.raises(ValueError, match='unknown opponent'):
         foreign_arena.play(None, 'nobody', None, games=0)
+
+
+def test_preflight_reports_runtime_repo_weights_and_c_build_tools(monkeypatch, tmp_path):
+    bridges = tmp_path / 'bridges'
+    bridges.mkdir()
+    sigma_script = bridges / 'sigma.py'
+    c_script = bridges / 'pavlos.py'
+    sigma_script.write_text('', encoding='utf-8')
+    c_script.write_text('', encoding='utf-8')
+    monkeypatch.setenv('BOTS_DIR', str(tmp_path / 'bots'))
+    monkeypatch.setattr(foreign_arena, 'OPPONENTS', {
+        'sigma': ['missing-python', str(sigma_script)],
+        'pavlosdais': [sys.executable, str(c_script)],
+    })
+    monkeypatch.setattr(foreign_arena.shutil, 'which', lambda command: None)
+
+    report = foreign_arena.preflight(['sigma', 'pavlosdais'])
+
+    assert not report['ok']
+    sigma = report['opponents'][0]
+    assert {'runtime', 'external_repo', 'weights'} <= {
+        req['kind'] for req in sigma['missing']}
+    pavlos = report['opponents'][1]
+    assert 'binary' in {req['kind'] for req in pavlos['missing']}
+    assert len([req for req in pavlos['missing'] if req['kind'] == 'build_tool']) == 2
+    assert any('gcc' in req['value'] for req in pavlos['missing']
+               if req['kind'] == 'build_tool')
+
+
+def test_play_reports_outcomes_and_calls_back_once_per_game(monkeypatch, tmp_path):
+    class Net:
+        planes = 18
+
+    class Bot:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    completed = []
+    monkeypatch.setattr(foreign_arena, 'ForeignBot', Bot)
+    result = foreign_arena.play(
+        Net(), 'vader', None, games=3, max_plies=0, logdir=tmp_path,
+        on_game_complete=completed.append)
+
+    assert len(completed) == 3
+    assert all(item['games'] == 1 and item['honest_game'] == 1 for item in completed)
+    assert result['honest_game'] == 3
+    assert sum(result[name] for name in foreign_arena.TECHNICAL_OUTCOMES) == 3
+
+
+def test_smoke_does_not_start_bridge_when_preflight_fails(monkeypatch):
+    monkeypatch.setattr(foreign_arena, 'preflight', lambda opponents: {
+        'ok': False, 'opponents': [], 'host_requirements': []})
+    monkeypatch.setattr(foreign_arena, 'Bridge', lambda *args: (_ for _ in ()).throw(
+        AssertionError('bridge started despite failed dependencies')))
+
+    result = foreign_arena.smoke('vader')
+
+    assert result['ran'] is False and result['ok'] is False
+
+
+def test_smoke_handshakes_validates_one_move_and_closes(monkeypatch, tmp_path):
+    events = []
+
+    class Bridge:
+        def __init__(self, argv, log):
+            events.append(('init', argv, log))
+
+        def start(self, seed):
+            events.append(('start', seed))
+
+        def move(self, state):
+            events.append(('move', state.ply))
+            return legal_actions(state)[0], None
+
+        def close(self):
+            events.append(('close',))
+
+    monkeypatch.setattr(foreign_arena, 'preflight', lambda opponents: {'ok': True})
+    monkeypatch.setattr(foreign_arena, 'Bridge', Bridge)
+
+    result = foreign_arena.smoke('vader', tmp_path, seed=17)
+
+    assert result['ok'] and result['ran'] and result['action'] in legal_actions(State())
+    assert [event[0] for event in events] == ['init', 'start', 'move', 'close']

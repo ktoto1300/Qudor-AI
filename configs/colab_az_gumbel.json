@@ -26,6 +26,7 @@
     "weight_decay":  0.0001,
     "value_blend_q":  0.4,
     "ema_decay":  0.999,
+    "gumbel_value_mixture":  "adapted",
     "replay":  500000,
     "checkpoint_replay":  25000,
     "_save_every":  "latest.pt is ~230 MB and Drive is a FUSE mount, so writing it every iteration spends real minutes on I/O. Every 5 caps the work a disconnect can undo at five iterations.",

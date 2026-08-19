@@ -1,6 +1,6 @@
 # Qudor AI - Reproducibility Manifest
 
-This document records the exact runtime environments, dependency pinning, and verification procedures required to reproduce the execution, training, and testing environments of **Qudor AI** (`qudor-ai==2.0.0`).
+This document records the exact runtime environments, dependency pinning, and verification procedures required to reproduce the execution, training, and testing environments of **Qudor AI** (`qudor-ai==2.1.0`).
 
 ---
 
