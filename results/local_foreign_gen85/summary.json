@@ -1,0 +1,121 @@
+{
+  "net": "gen85_best.pt",
+  "generation": 85,
+  "updated": "2026-08-20 08:57:54 UTC",
+  "deadline": "2026-08-20 05:47:52 UTC",
+  "total_games": 970,
+  "excluded": {
+    "cryer": "bridge repair cannot be verified without the external bot repository",
+    "pavlosdais": "native bridge repair cannot be verified without bot sources/binary",
+    "vader": "known move-one bridge forfeit; external repository/weights required to repair",
+    "berlioz": "technical failure streak 10 reached threshold 3",
+    "dimi": "technical failure streak 10 reached threshold 3"
+  },
+  "leaderboard": [
+    {
+      "opponent": "marcobt15",
+      "games": 270,
+      "wins": 270,
+      "draws": 0,
+      "losses": 0,
+      "opp_forfeits": 0,
+      "honest_game": 270,
+      "explicit_forfeit": 0,
+      "illegal_move": 0,
+      "timeout": 0,
+      "bridge_error": 0,
+      "win_rate": 1.0,
+      "honest_games": 270,
+      "honest_win_rate": 1.0,
+      "honest_win_rate_wilson95": [
+        0.986,
+        1.0
+      ],
+      "avg_plies": 25.0
+    },
+    {
+      "opponent": "dimi",
+      "games": 170,
+      "wins": 170,
+      "draws": 0,
+      "losses": 0,
+      "opp_forfeits": 10,
+      "honest_game": 160,
+      "explicit_forfeit": 0,
+      "illegal_move": 0,
+      "timeout": 1,
+      "bridge_error": 9,
+      "win_rate": 1.0,
+      "honest_games": 160,
+      "honest_win_rate": 1.0,
+      "honest_win_rate_wilson95": [
+        0.9766,
+        1.0
+      ],
+      "avg_plies": 29.2
+    },
+    {
+      "opponent": "gorisanson",
+      "games": 270,
+      "wins": 267,
+      "draws": 0,
+      "losses": 3,
+      "opp_forfeits": 0,
+      "honest_game": 270,
+      "explicit_forfeit": 0,
+      "illegal_move": 0,
+      "timeout": 0,
+      "bridge_error": 0,
+      "win_rate": 0.9889,
+      "honest_games": 270,
+      "honest_win_rate": 0.9889,
+      "honest_win_rate_wilson95": [
+        0.9678,
+        0.9962
+      ],
+      "avg_plies": 49.3
+    },
+    {
+      "opponent": "sigma",
+      "games": 250,
+      "wins": 151,
+      "draws": 3,
+      "losses": 96,
+      "opp_forfeits": 0,
+      "honest_game": 250,
+      "explicit_forfeit": 0,
+      "illegal_move": 0,
+      "timeout": 0,
+      "bridge_error": 0,
+      "win_rate": 0.604,
+      "honest_games": 250,
+      "honest_win_rate": 0.61,
+      "honest_win_rate_wilson95": [
+        0.5483,
+        0.6684
+      ],
+      "avg_plies": 63.3
+    },
+    {
+      "opponent": "berlioz",
+      "games": 10,
+      "wins": 10,
+      "draws": 0,
+      "losses": 0,
+      "opp_forfeits": 10,
+      "honest_game": 0,
+      "explicit_forfeit": 0,
+      "illegal_move": 0,
+      "timeout": 0,
+      "bridge_error": 10,
+      "win_rate": 1.0,
+      "honest_games": 0,
+      "honest_win_rate": 0.0,
+      "honest_win_rate_wilson95": [
+        0.0,
+        0.0
+      ],
+      "avg_plies": 1.5
+    }
+  ]
+}

@@ -92,7 +92,7 @@ Published checkpoints live in `checkpoints/` and are stored via Git LFS. All of 
 the v3 16-plane encoder and the 128×10 SE ResNet architecture.
 
 - **`gen69_*`**: Belongs to the `official_rules_v2` lineage (`RULES_VERSION=2`, first official-rules-valid campaign, iteration 1419/1429). The `gen69_best.pt` champion achieved 100% win rates across all decisive games against 4 external engines in the overnight tournament (450 games, 0 losses, 0 draws). Full SHA-256 integrity hashes, architecture details, and baseline benchmarks are documented in [`MODEL_CARD.md`](MODEL_CARD.md).
-- **`gen85_best.pt`**: Published continuation champion under `official_rules_v2_batched`, evaluated in multi-engine matches (20 games per opponent at 64 sims, temperature 0.5; winning 20-0 against `berlioz10`, `marcobt15`, `dimitrijekaranfilovic`, `gorisanson`, `cryer`, and 11-9 against `sigma`). No `gen85_latest.pt` full training state is published.
+- **`gen85_best.pt`**: Published continuation champion under `official_rules_v2_batched`, evaluated in multi-engine matches (20 games per opponent at 64 sims, temperature 0.5; winning 20-0 against `berlioz10`, `marcobt15`, `dimitrijekaranfilovic`, `gorisanson`, `cryer`, and 11-9 against `sigma`). A CPU-only laptop overnight run (19–20 August 2026, 16 sims, 970 games) reproduced the result at scale: 100% vs `marcobt15` (270/270) and `dimitrijekaranfilovic` (170/170 honest), 98.9% vs `gorisanson` (267/270), 60.4% vs `sigma` (151/250) — see [Laptop overnight tournament](#gen85-laptop-overnight-tournament-19-20-august-2026). No `gen85_latest.pt` full training state is published.
 - **`gen13_*`**: Legacy checkpoints from the earlier Colab campaign trained before the wall-overlap geometry fix.
 
 | File | Generation | Iteration | Rules Version | Encoder | Architecture | Arena Gate / Note |
@@ -300,6 +300,32 @@ These opponents are open-source hobby and student engines, not top-tier programs
 result shows the net clearly outclasses this set; it is not a claim about the strongest
 Quoridor engines or human play, which have not been tested.
 
+#### gen85 laptop overnight tournament (19–20 August 2026, 970 games)
+
+After the server was retired, the `gen85` champion was re-run on a CPU-only laptop
+(Intel Core i5-1155G7, 7.7 GB RAM, no CUDA) with Gumbel search at 16 simulations per
+move, temperature 0.5, serial play, batches of 10 games per opponent, colours alternating
+each game. The run spanned two 8-hour blocks with automatic resume after a watchdog
+restart; seeds were fixed per round. `cryer`, `pavlosdais` and `vader` were excluded as
+known-broken from the start; `berlioz` and `dimi` were auto-excluded after their bridges
+failed more than the technical-failure threshold (3) — their rows below are not evidence
+of strength (all their games ended in `bridge_error` or `timeout` forfeits).
+
+| Opponent | Games | W | D | L | Honest | Win rate (Wilson 95%) | Avg plies |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| marcobt15_Quoridor_Reinforcement_Learning | 270 | 270 | 0 | 0 | 270 | 100% (98.6–100) | 25.0 |
+| dimitrijekaranfilovic_quoridor | 170 | 170 | 0 | 0 | 160 | 100% (97.7–100) | 29.2 |
+| gorisanson_quoridor-ai | 270 | 267 | 0 | 3 | 270 | 98.9% (96.8–99.6) | 49.3 |
+| sigma (bartolomeo3000_SigmaQuoridor) | 250 | 151 | 3 | 96 | 250 | 60.4% (54.8–66.8) | 63.3 |
+| berlioz10_quoridor-monte-carlo | 10 | 10 | 0 | 0 | 0 | — (10 bridge errors) | 1.5 |
+
+The laptop run confirms the server-era numbers at ten times the sample size: `marcobt15`
+is swept 270-0, `gorisanson` loses only 3 of 270, and `sigma` — the only engine with real
+wins — holds ~60% against the net, matching the 11-9 server result (55%). Win rates are
+honest-game based (opponent forfeits counted separately) with Wilson 95% confidence
+intervals; the raw per-game records live in `results/local_foreign_gen85/` and are
+catalogued in [`results/MANIFEST.json`](results/MANIFEST.json).
+
 ## Training and evaluation
 
 The main pipeline is implemented in:
@@ -347,7 +373,10 @@ python tools/overnight_arena.py --net checkpoints/gen85_best.pt --profile cpu-la
 ```
 
 External bot repositories, native binaries and Sigma weights are not distributed in this
-repository and cannot be restored automatically.
+repository and cannot be restored automatically. The 19–20 August 2026 laptop run used
+exactly this command and produced the results in
+[Laptop overnight tournament](#gen85-laptop-overnight-tournament-19-20-august-2026);
+raw per-game records are in `results/local_foreign_gen85/`.
 
 ### Human matches and endgame diagnostics
 
